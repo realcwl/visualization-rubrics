@@ -1,0 +1,1193 @@
+<title>TPU Systolic Array</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&family=Saira+Condensed:wght@500;600&display=swap">
+<style>
+/* Layout: one full-bleed WebGL stage. Lesson column top-left over a soft scrim, color key and step clock top-right, chapter timeline along the bottom edge. */
+:root{
+  --bg:#05080c;
+  --ink:#e4ecf3;
+  --ink-2:#c3cfda;
+  --muted:#8d9db0;
+  --faint:#5b6a7b;
+  --rule:rgba(141,157,176,.24);
+  --scrim:rgba(5,8,12,.9);
+  --act:#38d9ff;   /* activations, bf16 */
+  --wgt:#8f9bff;   /* weights, bf16 */
+  --psum:#ffa94d;  /* partial sums, fp32 */
+  --res:#ffd166;   /* finished outputs, fp32 */
+  --font-display:"Saira Condensed","Arial Narrow","Roboto Condensed",sans-serif;
+  --font-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --gl:max(16px,env(safe-area-inset-left,0px));
+  --gr:max(16px,env(safe-area-inset-right,0px));
+  color-scheme:dark;
+}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);overflow:hidden;overscroll-behavior:none}
+body{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));font-family:var(--font-body);-webkit-font-smoothing:antialiased}
+#stage{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab;outline:none}
+#stage.drag{cursor:grabbing}
+#stage:focus-visible{box-shadow:inset 0 0 0 2px var(--act)}
+.scrim{position:fixed;left:0;top:0;width:min(760px,100%);height:min(820px,92%);pointer-events:none;background:radial-gradient(110% 100% at 0% 0%,var(--scrim) 0%,rgba(5,8,12,.74) 42%,rgba(5,8,12,0) 76%)}
+#fade{position:fixed;inset:0;background:var(--bg);pointer-events:none;opacity:1}
+
+#hud{position:fixed;top:calc(env(safe-area-inset-top,0px) + 22px);left:var(--gl);width:min(392px,calc(100% - var(--gl) - var(--gr)));pointer-events:none}
+#hud .fadeable{transition:opacity .2s ease}
+#hud.swap .fadeable{opacity:0}
+.eyebrow{font:500 11px/1.2 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:flex;gap:.7em;flex-wrap:wrap}
+.eyebrow b{color:var(--act);font-weight:500}
+.eyebrow span+span::before{content:"·";margin-right:.7em;color:var(--faint)}
+h1{font:600 clamp(28px,3.6vw,42px)/1 var(--font-display);letter-spacing:.01em;margin:.3em 0 .36em;text-wrap:balance}
+#desc{font:400 14px/1.55 var(--font-body);color:var(--ink-2);margin:0 0 14px;max-width:62ch}
+#desc small{display:block;margin-top:6px;font-size:12px;color:var(--muted)}
+#mats{display:flex;align-items:center;gap:9px;margin:0 0 14px}
+#mats[hidden]{display:none!important}
+.mat{display:flex;flex-direction:column;gap:4px}
+.mat b{font:500 10.5px/1 var(--font-mono);letter-spacing:.08em;color:var(--faint)}
+.mat .g{display:grid;grid-template-columns:repeat(4,22px);gap:2px}
+.mat .g i{height:19px;display:grid;place-items:center;font:500 11px/1 var(--font-mono);font-style:normal;font-variant-numeric:tabular-nums;color:var(--faint);background:rgba(141,157,176,.07);border-radius:3px;transition:background .25s,color .25s}
+#mX .g i.in{color:var(--act);background:rgba(56,217,255,.1)}
+#mW .g i.in{color:var(--wgt);background:rgba(143,155,255,.12)}
+#mY .g i.in{color:var(--res);background:rgba(255,209,102,.13)}
+.mat .g i.hot{color:#05080c!important;background:var(--ink)!important}
+#mX .g i.hot{background:var(--act)!important}
+#mW .g i.hot{background:var(--wgt)!important}
+#mY .g i.hot{background:var(--res)!important}
+.mats-op{font:500 15px/1 var(--font-mono);color:var(--faint);margin-top:14px}
+#eq{font:500 14px/1.5 var(--font-mono);color:var(--ink);margin:0 0 12px;font-variant-numeric:tabular-nums}
+#eq[hidden]{display:none!important}
+#eq .st{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+#eq .a{color:var(--act)} #eq .w{color:var(--wgt)} #eq .p{color:var(--psum)} #eq .r{color:var(--res)} #eq .dim{color:var(--faint)}
+#stats{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0 0 12px;font-variant-numeric:tabular-nums}
+#stats dt{font:500 10.5px/1.65 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);white-space:nowrap}
+#stats dd{margin:0;font:500 13px/1.45 var(--font-mono);color:var(--ink);min-width:0}
+#chartbox{margin:0}
+#chartbox[hidden]{display:none!important}
+#chartbox figcaption{font:500 10.5px/1 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+#chart{display:block;width:300px;max-width:100%;height:64px}
+
+#key{position:fixed;top:calc(env(safe-area-inset-top,0px) + 24px);right:var(--gr);pointer-events:none;display:flex;flex-direction:column;align-items:flex-end;gap:12px}
+#legend{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font:400 11.5px/1.3 var(--font-mono);color:var(--muted)}
+#legend li{display:flex;align-items:center;gap:7px}
+#legend i{width:9px;height:9px;border-radius:2px;background:currentColor;box-shadow:0 0 8px currentColor;display:inline-block}
+#legend li span{color:var(--ink-2)}
+#clockbox{display:flex;flex-direction:column;align-items:flex-end;gap:6px;font:500 11px/1 var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums}
+#stepnum{font:600 22px/1 var(--font-display);color:var(--ink);letter-spacing:.02em}
+#phases{display:flex;gap:3px}
+#phases span{font:500 9.5px/1 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;padding:4px 6px;border:1px solid var(--rule);border-radius:3px;color:var(--faint);transition:color .12s,border-color .12s,background .12s}
+#phases span.on{color:var(--ink);border-color:var(--ink-2);background:rgba(228,236,243,.08)}
+#phases[hidden]{display:none!important}
+
+#bar{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;gap:12px;padding-block:18px calc(env(safe-area-inset-bottom,0px) + 14px);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:linear-gradient(to top,rgba(5,8,12,.9),rgba(5,8,12,0))}
+#play{flex:none;width:34px;height:34px;border-radius:50%;border:1px solid var(--rule);background:rgba(12,18,26,.85);color:var(--ink);display:grid;place-items:center;cursor:pointer;padding:0}
+#play:hover{border-color:var(--muted)}
+#play:focus-visible,#track:focus-visible{outline:2px solid var(--act);outline-offset:2px}
+#play svg{width:12px;height:12px;fill:currentColor}
+#track{flex:1;min-width:0;display:flex;gap:3px;height:34px;align-items:flex-end;padding-bottom:10px;box-sizing:border-box;cursor:pointer;position:relative;touch-action:none}
+.seg{position:relative;height:4px;background:rgba(141,157,176,.22);border-radius:2px;min-width:0;transition:height .15s}
+.seg i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ink-2);border-radius:2px}
+.seg span{position:absolute;bottom:9px;left:0;font:500 10px/1 var(--font-mono);color:var(--faint);white-space:nowrap;letter-spacing:.06em;text-transform:uppercase;pointer-events:none}
+.seg.on{height:6px}
+.seg.on span{color:var(--ink);z-index:2;background:rgba(5,8,12,.92);padding-right:6px}
+.seg span em{font-style:normal;display:none}
+.seg.on span em{display:inline}
+.seg.on i{background:var(--act)}
+#time{flex:none;font:500 11px/1 var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums;min-width:84px;text-align:right}
+#hint{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 70px);transform:translateX(-50%);font:500 12px/1 var(--font-mono);letter-spacing:.04em;color:var(--ink);background:rgba(5,8,12,.7);padding:9px 14px;border:1px solid var(--rule);border-radius:999px;pointer-events:none;transition:opacity .8s;white-space:nowrap}
+
+#labels{position:fixed;inset:0;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;left:0;top:0;width:0;height:0;visibility:hidden;will-change:transform,opacity;color:var(--ink)}
+.lbl .dot{position:absolute;left:-3px;top:-3px;width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+.lbl .stem{position:absolute;left:0;top:0;width:18px;height:1px;background:currentColor;opacity:.75;transform-origin:0 0}
+.lbl .txt{position:absolute;white-space:nowrap;font:500 11.5px/1.3 var(--font-mono);color:var(--ink);text-shadow:0 1px 2px #000,0 0 10px rgba(0,0,0,.95),0 0 3px #000}
+.lbl .txt span{display:block;font-weight:400;font-size:10.5px;color:var(--ink-2)}
+.lbl.ne .stem{transform:rotate(-40deg)} .lbl.ne .txt{left:15px;bottom:9px}
+.lbl.nw .stem{transform:rotate(-140deg)} .lbl.nw .txt{right:15px;bottom:9px;text-align:right}
+.lbl.se .stem{transform:rotate(40deg)} .lbl.se .txt{left:15px;top:9px}
+.lbl.sw .stem{transform:rotate(140deg)} .lbl.sw .txt{right:15px;top:9px;text-align:right}
+.lbl.far .stem{width:56px}
+.lbl.far.ne .txt{left:44px;bottom:34px} .lbl.far.nw .txt{right:44px;bottom:34px} .lbl.far.se .txt{left:44px;top:34px} .lbl.far.sw .txt{right:44px;top:34px}
+.lbl.xl .stem{width:100px}
+.lbl.xl.ne .txt{left:80px;bottom:66px}
+.lbl.tag .dot,.lbl.tag .stem{display:none}
+.lbl.tag .txt{left:0;top:0;transform:translate(-50%,-50%);font-size:11px}
+noscript{position:fixed;inset:auto 16px 16px;color:var(--ink)}
+
+@media (max-width:700px){
+  #hud{top:calc(env(safe-area-inset-top,0px) + 14px)}
+  h1{font-size:26px;margin:.25em 0 .3em}
+  #desc{font-size:12.5px;line-height:1.45;margin-bottom:8px}
+  #desc small{display:none}
+  #mats,#chartbox{display:none!important}
+  #stats{gap:2px 10px;margin-bottom:6px}
+  #stats dd{font-size:12px}
+  #eq{font-size:12.5px;margin-bottom:6px}
+  #key{top:auto;bottom:calc(env(safe-area-inset-bottom,0px) + 66px);gap:8px}
+  #legend{flex-direction:row;flex-wrap:wrap;justify-content:flex-end;gap:4px 10px;font-size:10.5px;max-width:300px}
+  #legend li span{display:none}
+  #phases{display:none!important}
+  #stepnum{font-size:18px}
+  #hint{bottom:calc(env(safe-area-inset-bottom,0px) + 130px);font-size:11px}
+  .scrim{height:62%;width:100%}
+}
+@media (prefers-reduced-motion:reduce){
+  #hud .fadeable,.mat .g i,#hint{transition:none}
+}
+</style>
+
+<canvas id="stage" tabindex="0" aria-label="3D model of a TPU systolic array: weights shift in from the top, activations enter from the left, partial sums flow down and leave as outputs. Drag to orbit, scroll to zoom, space to pause, arrow keys to step."></canvas>
+<div class="scrim"></div>
+<div id="labels"></div>
+<section id="hud" aria-live="polite">
+  <div class="eyebrow fadeable"><b>TPU7x MXU</b><span>Systolic array</span><span id="chapn">1 / 9</span></div>
+  <h1 id="title" class="fadeable">A grid of multiply-adders</h1>
+  <p id="desc" class="fadeable"></p>
+  <div id="mats">
+    <div class="mat" id="mX"><b>X · LHS</b><div class="g"></div></div>
+    <span class="mats-op">·</span>
+    <div class="mat" id="mW"><b>W · RHS</b><div class="g"></div></div>
+    <span class="mats-op">=</span>
+    <div class="mat" id="mY"><b>Y · OUT</b><div class="g"></div></div>
+  </div>
+  <div id="eq" hidden></div>
+  <dl id="stats"></dl>
+  <figure id="chartbox" hidden><figcaption id="chartcap">Cells busy per step</figcaption><canvas id="chart" width="600" height="128"></canvas></figure>
+</section>
+<aside id="key">
+  <ul id="legend">
+    <li style="color:var(--act)"><span>activation · bf16</span><i></i></li>
+    <li style="color:var(--wgt)"><span>weight · bf16</span><i></i></li>
+    <li style="color:var(--psum)"><span>partial sum · fp32</span><i></i></li>
+    <li style="color:var(--res)"><span>output · fp32</span><i></i></li>
+  </ul>
+  <div id="clockbox">
+    <div id="stepnum">step 0</div>
+    <div id="phases"><span>move →</span><span>× +</span><span>move ↓</span></div>
+  </div>
+</aside>
+<div id="hint">Drag to orbit · scroll to zoom · space to pause · ← → one step</div>
+<footer id="bar">
+  <button id="play" type="button" aria-label="Pause"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1" width="3" height="10" rx=".6"/><rect x="7.5" y="1" width="3" height="10" rx=".6"/></svg></button>
+  <div id="track" role="slider" tabindex="0" aria-label="Timeline" aria-valuemin="0" aria-valuemax="124" aria-valuenow="0"></div>
+  <div id="time">0:00 / 2:04</div>
+</footer>
+<div id="fade"></div>
+<noscript>This page needs JavaScript and WebGL.</noscript>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* =====================================================================
+   Helpers
+   ===================================================================== */
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => { t = clamp(t); return t * t * (3 - 2 * t); };
+const sstep = (a, b, x) => ease((x - a) / (b - a));
+const fmt = v => (v < 0 ? '−' + (-v) : String(v));
+const SUB = '₀₁₂₃₄₅₆₇₈₉';
+const sub = n => String(n).split('').map(c => SUB[+c]).join('');
+
+// Monotone cubic through (x, y) points (Fritsch–Carlson): smooth, never overshoots, holds flat where y repeats.
+function monotone(pts) {
+  const n = pts.length, xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), d = [], m = new Array(n).fill(0);
+  for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+  m[0] = d[0]; m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+  for (let i = 0; i < n - 1; i++) {
+    if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
+    if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
+  }
+  const f = x => {
+    if (x <= xs[0]) return ys[0];
+    if (x >= xs[n - 1]) return ys[n - 1];
+    let i = 0; while (x > xs[i + 1]) i++;
+    const h = xs[i + 1] - xs[i], t = (x - xs[i]) / h, t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h * m[i + 1];
+  };
+  f.x0 = xs[0]; f.x1 = xs[n - 1];
+  return f;
+}
+
+/* =====================================================================
+   The 4×4 model. Weight-stationary dataflow, as in the TPU:
+   weights shift down into each cell, activations move right one cell
+   per step, partial sums move down one cell per step.
+   Cell (k, n): array row k (contraction index), column n (output column).
+   ===================================================================== */
+const K = 4, N = 4, M = 4;
+const X0 = [[1, 3, -1, 2], [2, -1, 3, 1], [-2, 1, 2, 3], [3, 2, -1, -2]];
+const W0 = [[2, -1, 1, 3], [1, 2, -2, 1], [-1, 3, 2, 2], [3, 1, 1, -1]];
+let seed = 20251028;
+const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+const VALS = [-3, -2, -1, 1, 2, 3];
+const rmat = () => Array.from({ length: 4 }, () => Array.from({ length: 4 }, () => VALS[Math.floor(rnd() * 6)]));
+
+// Weight tiles: L = step the first value enters the top of column 0.
+const TILES = [{ W: W0, L: 0 }, { W: rmat(), L: 16 }, { W: rmat(), L: 20 }];
+// Blocks of LHS rows: s = step row 0 of the block enters cell (0, 0). Run 0 is the worked example, run 1 the stream.
+const BLOCKS = [
+  { X: X0, s: 4, tile: 0, run: 0 },
+  { X: rmat(), s: 16, tile: 0, run: 1 },
+  { X: rmat(), s: 20, tile: 1, run: 1 },
+  { X: rmat(), s: 24, tile: 2, run: 1 },
+  { X: rmat(), s: 28, tile: 2, run: 1 },
+];
+TILES.forEach((t, j) => { t.first = Math.min(...BLOCKS.filter(b => b.tile === j).map(b => b.s)); });
+// Direct product, used to check what the array produces.
+for (const B of BLOCKS) {
+  const W = TILES[B.tile].W;
+  B.Y = B.X.map(row => W[0].map((_, n) => row.reduce((acc, x, k) => acc + x * W[k][n], 0)));
+}
+// Partial sum after the first `terms` cells of column n, in the order the array adds them.
+const partial = (B, m, n, terms) => { let p = 0; for (let k = 0; k < terms; k++) p += B.X[m][k] * TILES[B.tile].W[k][n]; return p; };
+// The first activation of a tile's first block flips each cell from the spare register to the live one.
+const swapAt = (j, k, n) => TILES[j].first + k + n;
+
+function macsAt(t, run) {
+  let c = 0;
+  for (const B of BLOCKS) {
+    if (run != null && B.run !== run) continue;
+    for (let k = 0; k < K; k++) for (let n = 0; n < N; n++) { const m = t - B.s - k - n; if (m >= 0 && m < M) c++; }
+  }
+  return c;
+}
+
+// Phases inside one step, drawn in sequence for legibility (hardware latches everything on one clock edge):
+// 0.00–0.30 activations move right · 0.22–0.40 weight latch · 0.45 multiply-add · 0.55–0.85 sums and weights move down
+const frac = x => x - Math.floor(x);
+const hopA = tau => Math.floor(tau) - 1 + ease(frac(tau) / 0.3);
+const hopP = tau => Math.floor(tau) + ease((frac(tau) - 0.55) / 0.3);
+const cx = n => n - 1.5, cz = k => k - 1.5;
+const comp = r => (r >= -1 ? r : -1 + 0.5 * (r + 1));      // queues outside the array pack at half pitch
+const Y_ACT = 0.56, Y_PS = 0.56, Y_SH = 0.15, Y_W = 0.3;
+const zY = m => 3.2 + 0.58 * m;
+
+/* =====================================================================
+   The 256×256 model (shader-drawn): same rules, one LHS row per step.
+   ===================================================================== */
+const BIG = { L: 0, S1: 256, M1: 8, S2: 576, M2: 1024 };
+const diag = d => (d < 0 || d > 510 ? 0 : d <= 255 ? d + 1 : 511 - d);
+const CUM = new Float64Array(513); for (let d = 0; d < 512; d++) CUM[d + 1] = CUM[d] + diag(d);
+const cellsOnDiags = (lo, hi) => { lo = Math.max(0, lo); hi = Math.min(510, hi); return hi < lo ? 0 : CUM[hi + 1] - CUM[lo]; };
+const busyBig = (t, s, m) => cellsOnDiags(t - s - m + 1, t - s);
+const utilC = t => (busyBig(t, BIG.S1, BIG.M1) + busyBig(t, BIG.S2, BIG.M2)) / 65536;
+
+/* =====================================================================
+   Timeline: global time T (seconds) drives everything, so scrubbing is exact.
+   ===================================================================== */
+const TOTAL = 124;
+const TAU_S = monotone([[0, -2.2], [6.6, -2.2], [13.6, 3.3], [18.6, 5.9], [20.4, 6.08], [27, 6.9], [29, 7.25], [39, 11.9], [46, 15.5], [48, 15.8], [70, 39.2], [71, 39.4]]);
+const TAU_C = monotone([[70, -60], [74, -30], [76, 0], [81, 330], [86, 680], [92, 1120], [97, 1580], [101.5, 2110], [104, 2125]]);
+const TAU_D = monotone([[103, -60], [106, -20], [112, 300], [124, 1100]]);
+
+const CH = [
+  { t0: 0, t1: 7, short: 'Grid', title: 'A grid of multiply-adders', sim: 'S',
+    desc: 'The MXU, the TPU’s matrix unit, is a systolic array: a square grid of cells that each multiply and add, wired only to their neighbours. TPU7x uses 256 × 256 cells. This model has 4 × 4, so every number fits on screen. It computes Y = X · W.' },
+  { t0: 7, t1: 14, short: 'Weights', title: 'Weights shift in', sim: 'S',
+    desc: 'The weights (the RHS) enter from the top and shift down one row per step into each cell’s spare register. Column n starts n steps after column 0, so the tile arrives as a diagonal. Every value passes through the cells above its own, so the bottom row goes in first.' },
+  { t0: 14, t1: 19, short: 'Activations', title: 'Activations enter on a diagonal', sim: 'S',
+    desc: 'Each row of X is one token’s activations. Element k enters array row k from the left, k steps after element 0, so X also arrives as a diagonal. When the first activation reaches a cell, the cell copies its weight from the spare register into the one the multiplier reads.' },
+  { t0: 19, t1: 28, short: 'One cell', title: 'One cell, one step', sim: 'S',
+    desc: 'Every cell repeats one operation each step: multiply the activation from the left by its weight, add the partial sum from above, then pass the activation right and the new sum down. Inputs are bf16 and the sum is kept in fp32.',
+    note: 'The moves are drawn one after another here. In hardware every cell updates on the same clock edge.' },
+  { t0: 28, t1: 40, short: 'One output', title: 'Follow one output', sim: 'S',
+    desc: 'y[1][2] is the dot product of row 1 of X with column 2 of W. Its partial sum starts in the top cell of column 2, gains one term in each cell on the way down, and leaves the bottom edge complete after 4 cells.' },
+  { t0: 40, t1: 48, short: 'Drain', title: 'Drain and check', sim: 'S',
+    desc: 'Outputs leave the bottom edge in the same diagonal order the inputs entered. When the last one lands, Y equals X · W. The 64 multiply-adds took 10 steps on 16 cells, so the array was 40% busy. The idle time is the pipeline bubble: filling and draining the diagonal.' },
+  { t0: 48, t1: 71, short: 'Streaming', title: 'Stream without bubbles', sim: 'S',
+    desc: 'In a real matmul the next block of X follows right behind, and the next weight tile shifts into the spare registers while the current tile is in use. The first row of a new block switches each cell to the new weights as it passes, so blocks never wait. After the fill, every cell works every step.',
+    note: 'The TPU v1 paper describes this double buffering: one weight tile in use while the next one loads.' },
+  { t0: 71, t1: 104, short: '256 × 256', title: 'Full size: 256 × 256', sim: 'C',
+    desc: 'TPU7x’s MXU has 65,536 cells. One bf16[8,256] chunk on its own lights a thin diagonal band, and most cells sit idle while it crosses. Stream about a thousand rows through the same weight tile and the whole array stays busy. This is why matmul dimensions should be well above 256.' },
+  { t0: 104, t1: 124, short: 'Two MXUs', title: 'Two MXUs per core', sim: 'D',
+    desc: 'Each TPU7x TensorCore has 2 MXUs and each chip has 2 TensorCores. One way to keep a core’s two MXUs busy: give each a different 256-column slice of W and stream the same rows of X through both. So tiled dimensions should be larger than 256 × the number of MXUs.',
+    note: 'Layout is schematic.' },
+];
+const chapterAt = T => { for (let i = CH.length - 1; i >= 0; i--) if (T >= CH[i].t0) return i; return 0; };
+
+/* =====================================================================
+   Renderer
+   ===================================================================== */
+const canvas = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.0;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#05080c');
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.32;
+const camera = new THREE.PerspectiveCamera(40, 1, 0.05, 500);
+scene.add(new THREE.HemisphereLight('#cfe3ff', '#0b0f14', 0.75));
+const sun = new THREE.DirectionalLight('#ffffff', 1.5); sun.position.set(-6, 12, 9); scene.add(sun);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.45, 0.9);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+let VW = 1, VH = 1;
+function resize() {
+  VW = window.innerWidth; VH = window.innerHeight;
+  renderer.setSize(VW, VH, false); composer.setSize(VW, VH);
+  camera.aspect = VW / VH;
+  // Shift the picture away from the lesson column: right on wide screens, down on narrow ones.
+  if (VW > 900) camera.setViewOffset(VW, VH, -Math.min(210, VW * 0.12), 0, VW, VH);
+  else if (VW < 700 && VH > VW) camera.setViewOffset(VW, VH, 0, -VH * 0.1, VW, VH);
+  else camera.clearViewOffset();
+  camera.updateProjectionMatrix();
+  sizeChart();
+}
+
+/* =====================================================================
+   Materials and textures
+   ===================================================================== */
+const PAL = {
+  act: { body: '#0f5368', glow: '#38d9ff', text: '#e9fbff' },
+  wgt: { body: '#2a3176', glow: '#8f9bff', text: '#f0f2ff' },
+  ps:  { body: '#6a390b', glow: '#ffa94d', text: '#fff1df' },
+  res: { body: '#6c5311', glow: '#ffd166', text: '#fff8e0' },
+};
+const texCache = new Map();
+function numTex(str, color) {
+  const key = str + '|' + color;
+  let t = texCache.get(key); if (t) return t;
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const fs = str.length <= 1 ? 76 : str.length === 2 ? 64 : 50;
+  g.font = `500 ${fs}px "IBM Plex Mono", ui-monospace, Menlo, monospace`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = 8;
+  g.fillStyle = color; g.fillText(str, 64, 68);
+  t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  texCache.set(key, t); return t;
+}
+
+const GEO_CHIP = new RoundedBoxGeometry(0.34, 0.1, 0.34, 2, 0.035);
+const GEO_WCHIP = new RoundedBoxGeometry(0.31, 0.07, 0.31, 2, 0.028);
+const GEO_FACE = new THREE.PlaneGeometry(0.3, 0.3).rotateX(-Math.PI / 2);
+const GEO_WFACE = new THREE.PlaneGeometry(0.28, 0.28).rotateX(-Math.PI / 2);
+const small = new THREE.Group(); scene.add(small);
+
+function chip(kind) {
+  const g = new THREE.Group();
+  const isW = kind === 'wgt';
+  const body = new THREE.Mesh(isW ? GEO_WCHIP : GEO_CHIP, new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.15, transparent: true }));
+  const face = new THREE.Mesh(isW ? GEO_WFACE : GEO_FACE, new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+  face.position.y = (isW ? 0.035 : 0.05) + 0.003;
+  g.add(body, face);
+  g.userData = { body, face, tone: null, key: null };
+  setTone(g, kind);
+  small.add(g); return g;
+}
+function setTone(c, tone) {
+  if (c.userData.tone === tone) return;
+  c.userData.tone = tone; c.userData.key = null;
+  const P = PAL[tone], m = c.userData.body.material;
+  m.color.set(P.body); m.emissive.set(P.glow);
+}
+function setVal(c, v) {
+  const s = fmt(v), key = s + c.userData.tone;
+  if (c.userData.key === key) return;
+  c.userData.key = key;
+  c.userData.face.material.map = numTex(s, PAL[c.userData.tone].text);
+  c.userData.face.material.needsUpdate = true;
+}
+function setOp(c, o) {
+  c.visible = o > 0.004;
+  c.userData.body.material.opacity = o;
+  c.userData.face.material.opacity = o;
+}
+
+/* ---------- substrate, floor grid ---------- */
+const FLOOR_FS = `uniform vec3 uBase, uLine; uniform float uOp; varying vec3 vW;
+void main(){
+  vec2 p = vW.xz;
+  vec2 fw = fwidth(p);
+  vec2 g = abs(fract(p) - 0.5);
+  vec2 l = 1.0 - smoothstep(vec2(0.5) - fw * 1.0, vec2(0.5), g);
+  float line = max(l.x, l.y) * (1.0 - smoothstep(0.025, 0.09, max(fw.x, fw.y)));
+  vec2 q = abs(fract(p / 64.0) - 0.5);
+  vec2 fw2 = fw / 64.0;
+  vec2 l2 = 1.0 - smoothstep(vec2(0.5) - fw2 * 1.2, vec2(0.5), q);
+  float coarse = max(l2.x, l2.y) * smoothstep(0.05, 0.3, max(fw.x, fw.y)) * (1.0 - smoothstep(0.6, 1.6, max(fw2.x, fw2.y) * 64.0 / 6.0)) * 0.5;
+  float r = length(p - vec2(-1.0, 0.0));
+  float fall = exp(-r / 20.0) + 0.35 * exp(-length(p - vec2(200.0, 200.0)) / 900.0);
+  vec3 c = uBase + uLine * (line * fall + coarse * 0.5);
+  gl_FragColor = vec4(c, 1.0);
+}`;
+const WORLD_VS = `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000).rotateX(-Math.PI / 2), new THREE.ShaderMaterial({
+  uniforms: { uBase: { value: new THREE.Color('#070b10') }, uLine: { value: new THREE.Color('#1c2733') }, uOp: { value: 1 } },
+  vertexShader: WORLD_VS, fragmentShader: FLOOR_FS }));
+floor.position.y = -0.012; scene.add(floor);
+
+const sub_ = new THREE.Mesh(new RoundedBoxGeometry(4.3, 0.03, 4.3, 2, 0.06), new THREE.MeshStandardMaterial({ color: '#0b1118', roughness: 0.85, metalness: 0.1, transparent: true }));
+sub_.position.set(0, 0.005, 0); small.add(sub_);
+
+/* ---------- PE plates ---------- */
+function plateTex(k, n) {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'), u = 256 / 0.86, at = v => 128 + v * u;
+  g.strokeStyle = 'rgba(160,185,215,.28)'; g.lineWidth = 2;
+  g.beginPath(); g.roundRect(6, 6, 244, 244, 16); g.stroke();
+  // live weight register (centre) and spare register (near-left)
+  g.strokeStyle = 'rgba(143,155,255,.55)'; g.lineWidth = 2.5;
+  g.beginPath(); g.roundRect(at(-0.17), at(-0.17), 0.34 * u, 0.34 * u, 8); g.stroke();
+  g.setLineDash([7, 6]); g.strokeStyle = 'rgba(143,155,255,.45)';
+  g.beginPath(); g.roundRect(at(-0.25 - 0.16), at(0.25 - 0.16), 0.32 * u, 0.32 * u, 8); g.stroke();
+  g.setLineDash([]);
+  g.font = '500 30px "IBM Plex Mono", ui-monospace, Menlo, monospace'; g.fillStyle = 'rgba(190,205,225,.62)';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(`${k},${n}`, at(0.25), at(-0.25));
+  g.font = '500 26px "IBM Plex Mono", ui-monospace, Menlo, monospace'; g.fillStyle = 'rgba(56,217,255,.5)';
+  g.fillText('→', at(-0.25), at(-0.25) + 52);
+  g.fillStyle = 'rgba(255,169,77,.55)'; g.fillText('↓', at(0.25) + 40, at(0.25));
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+const GEO_PLATE = new RoundedBoxGeometry(0.9, 0.08, 0.9, 2, 0.05);
+const GEO_PFACE = new THREE.PlaneGeometry(0.86, 0.86).rotateX(-Math.PI / 2);
+const PLATES = [];
+
+/* ---------- lanes (thin guides on the substrate) ---------- */
+function lane(x0, z0, x1, z1, color, op) {
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(len, 0.028).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op, depthWrite: false }));
+  m.position.set((x0 + x1) / 2, 0.026, (z0 + z1) / 2); m.rotation.y = -Math.atan2(z1 - z0, x1 - x0);
+  m.userData.op = op; small.add(m); return m;
+}
+const LANES = [];
+
+/* ---------- Y slots ---------- */
+const slotGeo = new THREE.BufferGeometry();
+{
+  const p = [], h = 0.19;
+  for (let m = 0; m < M; m++) for (let n = 0; n < N; n++) {
+    const x = cx(n), z = zY(m), c = [[x - h, z - h], [x + h, z - h], [x + h, z + h], [x - h, z + h]];
+    for (let i = 0; i < 4; i++) { const a = c[i], b = c[(i + 1) % 4]; p.push(a[0], 0.004, a[1], b[0], 0.004, b[1]); }
+  }
+  slotGeo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+}
+const slots = new THREE.LineSegments(slotGeo, new THREE.LineBasicMaterial({ color: '#ffd166', transparent: true, opacity: 0.32 }));
+small.add(slots);
+
+/* ---------- tokens ---------- */
+const WCH = [], ACH = [], PCH = [];
+
+function buildSmall() {
+  for (let k = 0; k < K; k++) for (let n = 0; n < N; n++) {
+    const plate = new THREE.Mesh(GEO_PLATE, new THREE.MeshStandardMaterial({ color: '#1a232e', roughness: 0.62, metalness: 0.2, emissive: '#ffd9a8', emissiveIntensity: 0, transparent: true }));
+    plate.position.set(cx(n), 0.04, cz(k));
+    const face = new THREE.Mesh(GEO_PFACE, new THREE.MeshBasicMaterial({ map: plateTex(k, n), transparent: true, depthWrite: false }));
+    face.position.y = 0.041; plate.add(face);
+    small.add(plate); PLATES.push({ k, n, mesh: plate, face });
+  }
+  for (let k = 0; k < K; k++) LANES.push(lane(-9.6, cz(k) - 0.25, 2.4, cz(k) - 0.25, '#38d9ff', 0.16));
+  for (let n = 0; n < N; n++) {
+    LANES.push(lane(cx(n) + 0.25, -2.0, cx(n) + 0.25, 2.8, '#ffa94d', 0.16));
+    LANES.push(lane(cx(n) - 0.25, -7.6, cx(n) - 0.25, cz(3) + 0.25, '#8f9bff', 0.16));
+  }
+  TILES.forEach((t, j) => { for (let k = 0; k < K; k++) for (let n = 0; n < N; n++) { const c = chip('wgt'); c.userData.j = j; c.userData.k = k; c.userData.n = n; setVal(c, t.W[k][n]); WCH.push(c); } });
+  BLOCKS.forEach((B, b) => {
+    for (let m = 0; m < M; m++) for (let k = 0; k < K; k++) { const c = chip('act'); Object.assign(c.userData, { b, m, k }); setVal(c, B.X[m][k]); ACH.push(c); }
+    for (let m = 0; m < M; m++) for (let n = 0; n < N; n++) { const c = chip('ps'); Object.assign(c.userData, { b, m, n }); PCH.push(c); }
+  });
+}
+
+/* =====================================================================
+   256×256 arrays (fragment shader draws every cell)
+   ===================================================================== */
+const BIG_VS = `varying vec2 vG; void main(){ vG = position.xz + 2.0; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+const BIG_FS = `
+uniform float uT, uL, uS1, uM1, uS2, uM2, uOp;
+uniform vec3 uBase, uRim, uWgt, uAct, uPs, uRes;
+varying vec2 vG;
+float boxd(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+float inBlock(float m, float M){ return step(0.0, m) * step(m, M - 1.0); }
+void main(){
+  vec2 c = floor(vG), f = fract(vG) - 0.5;
+  float aa = max(fwidth(vG.x), fwidth(vG.y));
+  float t = floor(uT);
+  float mask = 1.0 - smoothstep(-aa, aa, boxd(f, vec2(0.43), 0.09));
+  vec3 col; float a = 1.0;
+  if (c.x >= 0.0 && c.x < 256.0 && c.y >= 0.0 && c.y < 256.0) {
+    float k = c.y, n = c.x;
+    float rf = t - uL - n;                         // deepest row column n's weights have reached
+    float wIn = step(k, rf), wSet = step(255.0, rf);
+    float front = wIn * (1.0 - wSet) * exp(-(rf - k) * 0.3);
+    vec3 cc = uBase + uWgt * (0.075 * wIn + 1.1 * front);
+    float d = t - k - n, m1 = d - uS1, m2 = d - uS2;
+    float b1 = inBlock(m1, uM1), b2 = inBlock(m2, uM2), b = max(b1, b2);
+    float m = b1 > 0.5 ? m1 : m2;
+    float band = mod(floor(m / 8.0), 2.0);          // alternate 8-row chunks
+    vec3 hot = mix(uAct, uPs, k / 255.0) * (band > 0.5 ? 0.78 : 1.25);
+    cc = mix(cc, hot, b);
+    col = mix(uRim, cc, mask);
+  } else if (c.x >= -8.0 && c.x < -4.0 && c.y >= 0.0 && c.y < 256.0) {          // LHS rows enter here
+    float k = c.y, d = t - k;
+    float lit = max(inBlock(d - uS1, uM1), inBlock(d - uS2, uM2));
+    float rowMask = 1.0 - smoothstep(-aa, aa, abs(f.y) - 0.36);
+    col = mix(uRim, mix(uBase * 1.6, uAct * 1.1, lit), rowMask);
+  } else if (c.y >= -8.0 && c.y < -4.0 && c.x >= 0.0 && c.x < 256.0) {          // weights enter here
+    float n = c.x, d = t - uL - n;
+    float lit = inBlock(d, 256.0);
+    float colMask = 1.0 - smoothstep(-aa, aa, abs(f.x) - 0.36);
+    col = mix(uRim, mix(uBase * 1.6, uWgt * 1.1, lit), colMask);
+  } else if (c.y >= 260.0 && c.y < 264.0 && c.x >= 0.0 && c.x < 256.0) {        // outputs leave here
+    float n = c.x, d = t - n - 255.0;
+    float lit = max(inBlock(d - uS1, uM1), inBlock(d - uS2, uM2));
+    float colMask = 1.0 - smoothstep(-aa, aa, abs(f.x) - 0.36);
+    col = mix(uRim, mix(uBase * 1.6, uRes * 1.2, lit), colMask);
+  } else { discard; }
+  gl_FragColor = vec4(col, a * uOp);
+}`;
+const BIGS = [];
+function bigArray(x, z, wgtColor) {
+  const geo = new THREE.PlaneGeometry(276, 276).rotateX(-Math.PI / 2).translate(122, 0, 126);
+  const u = {
+    uT: { value: 0 }, uL: { value: BIG.L }, uS1: { value: BIG.S1 }, uM1: { value: BIG.M1 }, uS2: { value: BIG.S2 }, uM2: { value: BIG.M2 }, uOp: { value: 0 },
+    uBase: { value: new THREE.Color('#121a24') }, uRim: { value: new THREE.Color('#080c11') }, uWgt: { value: new THREE.Color(wgtColor) },
+    uAct: { value: new THREE.Color('#38d9ff') }, uPs: { value: new THREE.Color('#ffa94d') }, uRes: { value: new THREE.Color('#ffd166') },
+  };
+  const mesh = new THREE.Mesh(geo, new THREE.ShaderMaterial({ uniforms: u, vertexShader: BIG_VS, fragmentShader: BIG_FS, transparent: true }));
+  mesh.position.set(x, 0.002, z); mesh.renderOrder = -1; mesh.visible = false;
+  // frame
+  const fg = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-2.6, 0.01, -2.6), new THREE.Vector3(254.6, 0.01, -2.6), new THREE.Vector3(254.6, 0.01, 254.6), new THREE.Vector3(-2.6, 0.01, 254.6), new THREE.Vector3(-2.6, 0.01, -2.6)]);
+  const frame = new THREE.Line(fg, new THREE.LineBasicMaterial({ color: '#5b6a7b', transparent: true, opacity: 0 }));
+  mesh.add(frame);
+  scene.add(mesh);
+  const A = { mesh, u, frame }; BIGS.push(A); return A;
+}
+const MXU0 = bigArray(0, 0, '#8f9bff');
+const MXU1 = bigArray(296, 0, '#c38bff');
+const MXU2 = bigArray(0, 380, '#8f9bff');
+const MXU3 = bigArray(296, 380, '#c38bff');
+
+// LHS bus feeding both MXUs of TensorCore 0 (dashes move with the step counter)
+const BUS_FS = `uniform float uT, uOp, uLen; uniform vec3 uCol; varying vec2 vUv;
+void main(){ float s = fract(vUv.x * uLen / 10.0 - uT * 0.08); float d = smoothstep(0.0, 0.08, s) * (1.0 - smoothstep(0.5, 0.58, s));
+  gl_FragColor = vec4(uCol * (0.35 + 0.9 * d), (0.35 + 0.65 * d) * uOp); }`;
+const BUS_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+const BUSES = [];
+function bus(x0, z0, x1, z1, w, z = 0) {
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  const u = { uT: { value: 0 }, uOp: { value: 0 }, uLen: { value: len }, uCol: { value: new THREE.Color('#38d9ff') } };
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(len, w).rotateX(-Math.PI / 2), new THREE.ShaderMaterial({ uniforms: u, vertexShader: BUS_VS, fragmentShader: BUS_FS, transparent: true, depthWrite: false }));
+  m.position.set((x0 + x1) / 2, 0.05 + z, (z0 + z1) / 2); m.rotation.y = -Math.atan2(z1 - z0, x1 - x0); m.visible = false;
+  scene.add(m); BUSES.push({ m, u }); return m;
+}
+bus(-120, -34, 284, -34, 5);
+bus(-14, -36.5, -14, 254, 5);
+bus(284, -36.5, 284, 254, 5);
+
+/* =====================================================================
+   Labels (HTML, projected each frame)
+   ===================================================================== */
+const labelsEl = document.getElementById('labels');
+const LBL = [];
+function mkLabel(text, subText, cls, color) {
+  const el = document.createElement('div');
+  el.className = 'lbl ' + (cls || 'ne');
+  if (color) el.style.color = color;
+  el.innerHTML = `<i class="dot"></i><i class="stem"></i><div class="txt">${text}${subText ? `<span>${subText}</span>` : ''}</div>`;
+  labelsEl.appendChild(el);
+  const L = { el, p: new THREE.Vector3(), op: 0, txt: el.querySelector('.txt') };
+  LBL.push(L); return L;
+}
+const _v = new THREE.Vector3();
+function placeLabels() {
+  for (const L of LBL) {
+    if (L.op < 0.02) { if (L.shown) { L.el.style.visibility = 'hidden'; L.shown = false; } continue; }
+    _v.copy(L.p).project(camera);
+    if (_v.z > 1 || Math.abs(_v.x) > 1.3 || Math.abs(_v.y) > 1.3) { if (L.shown) { L.el.style.visibility = 'hidden'; L.shown = false; } continue; }
+    const x = (_v.x * 0.5 + 0.5) * VW, y = (-_v.y * 0.5 + 0.5) * VH;
+    L.el.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;
+    L.el.style.opacity = L.op.toFixed(3);
+    if (!L.shown) { L.el.style.visibility = 'visible'; L.shown = true; }
+  }
+}
+const LB = {
+  W: mkLabel('W · weights (RHS)', 'bf16 · bottom row enters first', 'ne', '#8f9bff'),
+  X: mkLabel('X · activations (LHS)', 'bf16 · one row per token', 'nw', '#38d9ff'),
+  Y: mkLabel('Y = X · W', 'fp32 outputs', 'nw', '#ffd166'),
+  xrow: [0, 1, 2, 3].map(m => mkLabel(`x${sub(m)}`, '', 'tag', '#38d9ff')),
+  cA: mkLabel('activation a', 'arrives from the left', 'far nw', '#38d9ff'),
+  cP: mkLabel('partial sum p', 'arrives from above, leaves below', 'far se', '#ffa94d'),
+  cW: mkLabel('weight w', 'register the multiplier reads', 'xl ne', '#8f9bff'),
+  cS: mkLabel('spare weight register', 'the next tile loads here', 'far sw', '#8f9bff'),
+  track: mkLabel('y[1][2]', '', 'ne', '#ffa94d'),
+  out: mkLabel('to the result buffer', '', 'sw', '#ffd166'),
+  corner: mkLabel('the 4 × 4 model', 'cells 0–3', 'nw', '#c3cfda'),
+  size: mkLabel('256 × 256 = 65,536 cells', 'TPU7x MXU', 'ne', '#c3cfda'),
+  bW: mkLabel('weights shift in', 'one row per step', 'ne', '#8f9bff'),
+  bX: mkLabel('LHS rows enter', 'one diagonal per row', 'nw', '#38d9ff'),
+  bY: mkLabel('outputs leave', 'fp32', 'ne', '#ffd166'),
+  chunk: mkLabel('one bf16[8,256] chunk', 'most cells idle', 'ne', '#38d9ff'),
+  stream: mkLabel('1,024 more rows', 'array fills', 'ne', '#38d9ff'),
+  m0: mkLabel('MXU 0', 'W[:, 0:256] → Y[:, 0:256]', 'se', '#8f9bff'),
+  m1: mkLabel('MXU 1', 'W[:, 256:512] → Y[:, 256:512]', 'se', '#c38bff'),
+  bus: mkLabel('same rows of X', 'feed both MXUs', 'ne', '#38d9ff'),
+  tc0: mkLabel('TensorCore 0', '2 MXUs', 'nw', '#c3cfda'),
+  tc1: mkLabel('TensorCore 1', '2 MXUs', 'nw', '#c3cfda'),
+};
+
+/* =====================================================================
+   Per-frame update of the 4×4 model
+   ===================================================================== */
+const runVis = (run, T) => (run === 0 ? 1 : sstep(47.8, 49, T));
+const yVis = T => 1 - sstep(48.6, 50.2, T);
+
+const FOC = { x: cx(1), z: cz(1) };
+const focusDim = (F, x, z) => F > 0 ? 1 - 0.72 * F * sstep(0.48, 0.72, Math.max(Math.abs(x - FOC.x), Math.abs(z - FOC.z))) : 1;
+function updateSmall(T, tau, vis) {
+  small.visible = vis > 0.004;
+  if (!small.visible) return;
+  const st = Math.floor(tau), ph = tau - st;
+  const F = sstep(19.8, 20.8, T) * (1 - sstep(27.4, 28.4, T));
+  sub_.material.opacity = vis;
+  for (const l of LANES) l.material.opacity = l.userData.op * vis;
+  slots.material.opacity = 0.32 * vis * yVis(T);
+
+  for (const P of PLATES) {
+    let busy = 0;
+    for (const B of BLOCKS) { const m = st - B.s - P.k - P.n; if (m >= 0 && m < M) { busy = 1; break; } }
+    const pulse = busy ? Math.exp(-(((ph - 0.47) / 0.1) ** 2)) : 0;
+    P.mesh.material.emissiveIntensity = 0.025 * busy + 0.2 * pulse;
+    const fd = focusDim(F, cx(P.n), cz(P.k));
+    P.mesh.material.opacity = vis * fd; P.face.material.opacity = vis * fd;
+  }
+
+  for (const c of WCH) {
+    const { j, k, n } = c.userData, TL = TILES[j];
+    const e = TL.L + n + (K - 1 - k);
+    const row = Math.min(k, hopP(tau) - e - 1), rc = comp(row);
+    let x = cx(n) - 0.25, y = Y_SH, z = cz(rc) + 0.25, s = 0.9, glow = 0.16;
+    let op = vis * (j === 0 ? 1 : runVis(1, T)) * sstep(-7.4, -6.6, rc);
+    const g = ease((tau - swapAt(j, k, n) - 0.22) / 0.18);
+    if (g > 0) {
+      x = lerp(x, cx(n), g); z = lerp(z, cz(k), g); y = lerp(Y_SH, Y_W, g) + 0.12 * Math.sin(Math.PI * g);
+      s = lerp(0.9, 1, g); glow = lerp(0.16, 0.42, g) + 0.9 * Math.sin(Math.PI * g);
+    }
+    if (j + 1 < TILES.length) {
+      const r = clamp((tau - swapAt(j + 1, k, n) - 0.16) / 0.16);
+      if (r > 0) { s *= 1 - r; y -= 0.12 * r; op *= 1 - r; }
+    }
+    c.position.set(x, y, z); c.scale.setScalar(Math.max(s, 0.001));
+    c.userData.body.material.emissiveIntensity = glow;
+    setOp(c, op * focusDim(F, x, z));
+  }
+
+  for (const c of ACH) {
+    const { b, m, k } = c.userData, B = BLOCKS[b];
+    const e = B.s + m + k, col = hopA(tau) - e, cc = comp(col);
+    const op = vis * runVis(B.run, T) * sstep(-7.9, -7.1, cc) * (1 - clamp(col - (N - 1)));
+    c.position.set(cx(cc) - 0.25, Y_ACT, cz(k) - 0.25);
+    const r = st - e;   // cell index this activation sits in during this step
+    const flash = r >= 0 && r < N ? Math.exp(-(((ph - 0.47) / 0.08) ** 2)) : 0;
+    c.userData.body.material.emissiveIntensity = 0.3 + 0.25 * flash;
+    setOp(c, op * focusDim(F, c.position.x, c.position.z));
+  }
+
+  for (const c of PCH) {
+    const { b, m, n } = c.userData, B = BLOCKS[b];
+    const e0 = B.s + m + n;
+    const app = clamp((tau - e0 - 0.34) / 0.08);
+    let op = vis * runVis(B.run, T) * app;
+    if (op <= 0.004) { c.visible = false; continue; }
+    const nMac = clamp(Math.floor(tau - 0.45) - e0 + 1, 0, K);
+    setTone(c, nMac === K ? 'res' : 'ps');
+    setVal(c, partial(B, m, n, nMac));
+    const row = Math.min(K, hopP(tau) - e0);
+    let x = cx(n) + 0.25, y = Y_PS, z = cz(row) + 0.25;
+    const fl = tau - (e0 + K);
+    if (fl > 0) {
+      if (B.run === 0) {
+        const u = ease(fl / 0.9);
+        x = lerp(x, cx(n), u); z = lerp(z, zY(m), u); y = lerp(Y_PS, 0.055, u) + (0.45 + 0.3 * m) * Math.sin(Math.PI * u);
+      } else {
+        const f = clamp(fl / 0.7); y = lerp(Y_PS, 0.02, ease(f)); z += 0.35 * f; op *= 1 - f;
+      }
+    }
+    if (B.run === 0) op *= yVis(T);
+    const r = st - e0;
+    const flash = r >= 0 && r < K ? Math.exp(-(((ph - 0.47) / 0.07) ** 2)) : 0;
+    c.position.set(x, y, z); c.scale.setScalar(0.55 + 0.45 * app);
+    c.userData.body.material.emissiveIntensity = 0.3 + 0.6 * flash;
+    setOp(c, op * focusDim(F, x, z));
+  }
+}
+const psChip = (b, m, n) => PCH[b * 16 + m * 4 + n];
+
+/* =====================================================================
+   Camera: keyframes (T, target, distance, azimuth°, elevation°) plus the viewer's own orbit
+   ===================================================================== */
+const KEYS = [
+  [0, -2.4, 0, -0.2, 18.5, -22, 56],
+  [6.6, -2.2, 0, -0.6, 16.5, -14, 54],
+  [9.5, -0.6, 0, -2.6, 11.5, -10, 54],
+  [13.8, -0.8, 0, -1.6, 10.5, -16, 50],
+  [16.8, -2.4, 0, -0.3, 12.5, -18, 50],
+  [18.8, -1.4, 0, -0.5, 9, -22, 48],
+  [21, -0.5, 0.3, -0.5, 4.8, -24, 50],
+  [27.2, -0.45, 0.3, -0.45, 4.4, -14, 52],
+  [30.5, 0.6, 0.3, -0.6, 6.2, -20, 50],
+  [38.5, 0.5, 0.2, 2.2, 6.6, -8, 52],
+  [42.5, -0.3, 0, 1.4, 10.5, -8, 58],
+  [47.5, -0.3, 0, 1.3, 10, -4, 60],
+  [51, -1.9, 0, -1.2, 15.5, -16, 52],
+  [61, -1.7, 0, -1.0, 14.5, 6, 50],
+  [70.5, -1.0, 0, -0.6, 12.5, 12, 52],
+  [72.5, -1.4, 0, -0.8, 14, 12, 54],
+  [79, 126, 0, 128, 500, -6, 58],
+  [94, 126, 0, 130, 470, 6, 54],
+  [104, 126, 0, 130, 460, 10, 56],
+  [110, 290, 0, 132, 790, 0, 58],
+  [116.5, 290, 0, 136, 760, -4, 56],
+  [121.5, 274, 0, 300, 1300, -6, 62],
+  [124, 274, 0, 300, 1300, -6, 62],
+];
+const D2R = Math.PI / 180;
+const camState = { t: new THREE.Vector3(), d: 10, az: 0, el: 50 };
+function keyCam(T) {
+  let i = 0; while (i < KEYS.length - 2 && T > KEYS[i + 1][0]) i++;
+  const a = KEYS[i], b = KEYS[i + 1];
+  const u = ease((T - a[0]) / (b[0] - a[0]));
+  const d = Math.exp(lerp(Math.log(a[4]), Math.log(b[4]), u));
+  // big zooms pivot on what is on screen: the target moves in proportion to distance
+  const w = Math.abs(Math.log(b[4] / a[4])) > 1.2 ? (d - a[4]) / (b[4] - a[4]) : u;
+  camState.t.set(lerp(a[1], b[1], w), lerp(a[2], b[2], w), lerp(a[3], b[3], w));
+  camState.d = d; camState.az = lerp(a[5], b[5], u); camState.el = lerp(a[6], b[6], u);
+  return camState;
+}
+const _f = new THREE.Vector3(), _acc = new THREE.Vector3();
+function trackedPos(tau) {
+  // y[1][2] of the worked example, averaged over a short window so the camera glides between hops
+  const B = BLOCKS[0], m = 1, n = 2, e0 = B.s + m + n;
+  _acc.set(0, 0, 0);
+  for (const dt of [-0.4, -0.2, 0, 0.2, 0.4]) {
+    const t = Math.max(tau + dt, e0 + 0.45), fl = t - (e0 + K);
+    let x = cx(n) + 0.25, z = cz(Math.min(K, hopP(t) - e0)) + 0.25;
+    if (fl > 0) { const u = ease(fl / 0.9); x = lerp(x, cx(n), u); z = lerp(z, zY(m), u); }
+    _acc.x += x; _acc.z += z;
+  }
+  return _acc.multiplyScalar(0.2).setY(0.35);
+}
+const user = { az: 0, el: 0, ld: 0, pan: new THREE.Vector3(), last: -1e9 };
+function updateCamera(T, tau, dt, now) {
+  const c = keyCam(T);
+  const wF = sstep(28.2, 30, T) * (1 - sstep(38.6, 40.4, T));
+  if (wF > 0) c.t.lerp(trackedPos(tau), wF);
+  if (playing && now - user.last > 2600) {
+    const k = 1 - Math.exp(-dt / 1.1);
+    user.az *= 1 - k; user.el *= 1 - k; user.ld *= 1 - k; user.pan.multiplyScalar(1 - k);
+  }
+  let d = c.d * Math.exp(user.ld);
+  if (VW < 700 && VH > VW) d *= Math.pow(VH / VW, 0.62);
+  const az = (c.az + user.az) * D2R, el = clamp(c.el + user.el, 6, 88) * D2R;
+  const tgt = _f.copy(c.t).add(user.pan);
+  camera.position.set(tgt.x + d * Math.cos(el) * Math.sin(az), tgt.y + d * Math.sin(el), tgt.z + d * Math.cos(el) * Math.cos(az));
+  camera.lookAt(tgt);
+  camera.near = Math.max(0.02, d * 0.02); camera.far = d * 40 + 50;
+  camera.updateProjectionMatrix();
+  return d;
+}
+
+/* =====================================================================
+   HUD
+   ===================================================================== */
+const $ = id => document.getElementById(id);
+const hud = $('hud'), titleEl = $('title'), descEl = $('desc'), chapnEl = $('chapn'), statsEl = $('stats'), eqEl = $('eq'), matsEl = $('mats');
+const chartBox = $('chartbox'), chartCap = $('chartcap'), chartCv = $('chart'), stepEl = $('stepnum'), phasesEl = $('phases');
+const phaseSpans = [...phasesEl.children];
+function mkGrid(id, src) {
+  const g = document.querySelector(`#${id} .g`), cells = [];
+  for (let i = 0; i < 16; i++) { const c = document.createElement('i'); if (src) c.textContent = fmt(src[i >> 2][i & 3]); g.appendChild(c); cells.push(c); }
+  return cells;
+}
+const GX = mkGrid('mX', X0), GW = mkGrid('mW', W0), GY = mkGrid('mY', null);
+const cellState = new Map();
+function setCell(el, cls, txt) {
+  const key = cls + '|' + (txt ?? '');
+  if (cellState.get(el) === key) return; cellState.set(el, key);
+  el.className = cls; if (txt != null) el.textContent = txt;
+}
+
+let shownCh = -1, swapTimer = 0;
+function setChapter(i) {
+  if (i === shownCh) return;
+  const first = shownCh < 0; shownCh = i;
+  const apply = () => {
+    const C = CH[i];
+    titleEl.textContent = C.title;
+    descEl.innerHTML = C.desc + (C.note ? `<small>${C.note}</small>` : '');
+    chapnEl.textContent = `${i + 1} / ${CH.length}`;
+    hud.classList.remove('swap');
+  };
+  clearTimeout(swapTimer);
+  if (first || reduceMotion) apply(); else { hud.classList.add('swap'); swapTimer = setTimeout(apply, 190); }
+  SEGS.forEach((s, j) => s.classList.toggle('on', j === i));
+}
+let lastStats = '';
+function setStats(rows) {
+  const html = rows.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('');
+  if (html !== lastStats) { statsEl.innerHTML = html; lastStats = html; }
+}
+let lastEq = '';
+function setEq(html) {
+  eqEl.hidden = !html;
+  if (html && html !== lastEq) { eqEl.innerHTML = html; lastEq = html; }
+}
+
+function updateHud(T, tau, tauC, ci) {
+  setChapter(ci);
+  const C = CH[ci], st = Math.floor(tau), ph = tau - st;
+  // step clock + phase chips
+  if (C.sim === 'S') {
+    stepEl.textContent = `step ${tau < 0 ? '–' : st}`;
+    phasesEl.hidden = false;
+    const p = ph < 0.3 ? 0 : ph < 0.55 ? 1 : 2;
+    phaseSpans.forEach((s, j) => s.classList.toggle('on', j === p && tau >= 0));
+  } else {
+    stepEl.textContent = `step ${Math.max(0, Math.floor(C.sim === 'C' ? tauC : TAU_D(T))).toLocaleString('en-US')}`;
+    phasesEl.hidden = true;
+  }
+
+  // mini matrices for the worked example
+  matsEl.hidden = !(ci <= 5);
+  if (ci <= 5) {
+    const B = BLOCKS[0];
+    for (let m = 0; m < 4; m++) for (let k = 0; k < 4; k++) {
+      const entered = hopA(tau) - (B.s + m + k) >= 0;
+      let hot = (ci === 3 && m === 0 && k === 1 && tau > 5.95 && tau < 7.2) || (ci === 4 && m === 1);
+      setCell(GX[m * 4 + k], hot ? 'hot' : entered ? 'in' : '');
+    }
+    for (let k = 0; k < 4; k++) for (let n = 0; n < 4; n++) {
+      const loaded = hopP(tau) - (TILES[0].L + n + (K - 1 - k)) - 1 >= k;
+      const hot = (ci === 3 && k === 1 && n === 1 && tau > 5.95 && tau < 7.2) || (ci === 4 && n === 2);
+      setCell(GW[k * 4 + n], hot ? 'hot' : loaded ? 'in' : '');
+    }
+    for (let m = 0; m < 4; m++) for (let n = 0; n < 4; n++) {
+      const landed = tau >= B.s + m + n + K + 0.9;
+      const hot = ci === 4 && m === 1 && n === 2 && landed;
+      setCell(GY[m * 4 + n], hot ? 'hot' : landed ? 'in' : '', landed ? fmt(B.Y[m][n]) : '');
+    }
+  }
+
+  let eq = '', chart = null;
+  const B0 = BLOCKS[0];
+  if (ci === 0) {
+    setStats([['TPU7x MXU', '256 × 256 cells'], ['Before v6e', '128 × 128 cells'], ['This model', '4 × 4 cells'], ['Each cell, each step', '1 multiply, 1 add']]);
+  } else if (ci === 1) {
+    let cols = 0; for (let n = 0; n < 4; n++) if (hopP(tau) - (TILES[0].L + n + K - 1) - 1 >= 0) cols++;
+    setStats([['Columns loaded', `${cols} / 4`], ['Load order', 'bottom row first'], ['Column n starts', 'n steps late']]);
+  } else if (ci === 2) {
+    let inn = 0; for (let m = 0; m < 4; m++) for (let k = 0; k < 4; k++) if (hopA(tau) - (B0.s + m + k) >= 0) inn++;
+    setStats([['Activations in the array', `${inn} / 16`], ['Row k waits', 'k steps'], ['Weights', 'latched on first touch']]);
+  } else if (ci === 3) {
+    // PE (1, 1), step 6: first row of X meets w = W[1][1]
+    const a = X0[0][1], w = W0[1][1], pin = partial(B0, 0, 1, 1), pout = pin + a * w;
+    let state = 'waiting', A = '<span class="dim">a</span>', Wt = '<span class="dim">w</span>', Po = '<span class="dim">p′</span>';
+    const t = tau - 6;
+    if (t >= 0) { state = 'activation arrives from the left'; A = `<span class="a">${fmt(a)}</span>`; }
+    if (t >= 0.22) { state = 'weight latched from the spare register'; Wt = `<span class="w">${fmt(w)}</span>`; }
+    if (t >= 0.42) { state = 'multiply-add'; Po = `<span class="p">${fmt(pout)}</span>`; }
+    if (t >= 0.55) state = 'sum moves down, activation moves right next step';
+    eq = `<span class="st">PE (1, 1) · ${state}</span>${Po} = <span class="p">${fmt(pin)}</span> + ${A} × ${Wt}<br><span class="dim">p′ = p + a × w</span>`;
+    setStats([['Cell', 'PE (1, 1), step 6'], ['Inputs', 'bf16'], ['Running sum', 'fp32']]);
+  } else if (ci === 4) {
+    const e0 = B0.s + 1 + 2, nMac = clamp(Math.floor(tau - 0.45) - e0 + 1, 0, K);
+    const terms = [0, 1, 2, 3].map(k => {
+      const x = X0[1][k], w = W0[k][2];
+      const s = `${x < 0 ? '(' + fmt(x) + ')' : fmt(x)}·${w < 0 ? '(' + fmt(w) + ')' : fmt(w)}`;
+      return k < nMac ? `<span class="p">${s}</span>` : `<span class="dim">${s}</span>`;
+    });
+    const val = partial(B0, 1, 2, nMac);
+    eq = `<span class="st">y[1][2] = row 1 of X · column 2 of W</span>${terms.join(' + ')} = <span class="${nMac === 4 ? 'r' : 'p'}">${nMac ? fmt(val) : '…'}</span>`;
+    setStats([['Terms added', `${nMac} / 4`], ['Cells passed', `${Math.max(0, Math.min(4, Math.floor(hopP(Math.max(tau, e0)) - e0)))} / 4`]]);
+  } else if (ci === 5) {
+    let landed = 0; for (let m = 0; m < 4; m++) for (let n = 0; n < 4; n++) if (tau >= B0.s + m + n + K + 0.9) landed++;
+    let ok = true; for (let m = 0; m < 4; m++) for (let n = 0; n < 4; n++) if (partial(B0, m, n, K) !== B0.Y[m][n]) ok = false;
+    eq = landed === 16 ? `<span class="r">Y = X · W ✓</span> <span class="dim">all 16 match the direct product</span>` : `<span class="st">outputs landed</span>${landed} / 16`;
+    setStats([['Multiply-adds', '64'], ['Steps with work', '4 to 13 (10 steps)'], ['Array busy', '64 / (16 × 10) = 40%']]);
+    if (!ok) eq += ' ✗';
+    chart = { kind: 'bars', from: 0, to: 16, run: 0, cap: 'Cells busy per step · worked example' };
+  } else if (ci === 6) {
+    let rows = 0; for (let b = 1; b < BLOCKS.length; b++) for (let m = 0; m < 4; m++) if (hopA(tau) - (BLOCKS[b].s + m) >= 0) rows++;
+    const busy = tau >= 0 ? macsAt(st, 1) : 0;
+    setStats([['Rows streamed', `${rows} / 16`], ['Weight tiles', 'W₁ → W₂ → W₃'], ['Busy this step', `${busy} / 16 cells`], ['Gaps between blocks', '0 steps']]);
+    chart = { kind: 'bars', from: 16, to: 40, run: 1, cap: 'Cells busy per step · stream' };
+  } else if (ci === 7) {
+    const u = utilC(Math.floor(tauC));
+    setStats([['Busy this step', `${(u * 100).toFixed(1)}%`], ['TPU7x rate', '8 rows every 4 cycles'], ['Clock', '2.2 GHz'], ['Per MXU', '≈ 5.8 × 10¹⁴ bf16 FLOP/s']]);
+    chart = { kind: 'area', cap: 'Cells busy per step · 256 × 256' };
+  } else {
+    setStats([['MXUs', '2 per TensorCore'], ['TensorCores', '2 per chip'], ['Per MXU', '≈ 5.8 × 10¹⁴ bf16 FLOP/s'], ['Per chip', '≈ 2.3 × 10¹⁵ bf16 FLOP/s']]);
+  }
+  setEq(eq);
+  chartBox.hidden = !chart;
+  if (chart) { if (chartCap.textContent !== chart.cap) chartCap.textContent = chart.cap; drawChart(chart, tau, tauC); }
+}
+
+/* ---------- utilization chart ---------- */
+const cg = chartCv.getContext('2d');
+let CW = 300, CHh = 64;
+function sizeChart() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  CW = chartCv.clientWidth || 300; CHh = chartCv.clientHeight || 64;
+  chartCv.width = Math.round(CW * dpr); chartCv.height = Math.round(CHh * dpr);
+  cg.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function drawChart(spec, tau, tauC) {
+  cg.clearRect(0, 0, CW, CHh);
+  const top = 6, bot = CHh - 14, h = bot - top;
+  cg.strokeStyle = 'rgba(141,157,176,.25)'; cg.lineWidth = 1;
+  cg.beginPath(); cg.moveTo(0, top + 0.5); cg.lineTo(CW, top + 0.5); cg.moveTo(0, bot + 0.5); cg.lineTo(CW, bot + 0.5); cg.stroke();
+  cg.font = '500 9.5px "IBM Plex Mono", ui-monospace, monospace'; cg.fillStyle = '#5b6a7b'; cg.textBaseline = 'top';
+  if (spec.kind === 'bars') {
+    const n = spec.to - spec.from, bw = CW / n, now = Math.floor(tau);
+    for (let i = 0; i < n; i++) {
+      const t = spec.from + i, v = macsAt(t, spec.run) / 16;
+      const x = i * bw + 1, w = Math.max(1, bw - 2), y = bot - v * h;
+      if (t < now || (t === now && tau - now >= 0.45)) { cg.fillStyle = v >= 1 ? '#38d9ff' : '#c3cfda'; cg.fillRect(x, y, w, bot - y); }
+      else { cg.strokeStyle = 'rgba(141,157,176,.35)'; cg.strokeRect(x + 0.5, y + 0.5, w - 1, Math.max(0, bot - y - 1)); }
+      if (t === now) { cg.fillStyle = '#e4ecf3'; cg.fillRect(x, bot + 2, w, 2); }
+    }
+    cg.fillStyle = '#5b6a7b';
+    cg.fillText(`step ${spec.from}`, 0, bot + 4);
+    cg.textAlign = 'right'; cg.fillText(`${spec.to - 1}`, CW, bot + 4); cg.textAlign = 'left';
+    cg.fillText('16', 2, top + 2);
+  } else {
+    const t0 = 0, t1 = 2125, now = Math.floor(tauC);
+    cg.beginPath(); cg.moveTo(0, bot);
+    for (let i = 0; i <= 300; i++) { const t = t0 + (t1 - t0) * i / 300; cg.lineTo(CW * i / 300, bot - utilC(Math.floor(t)) * h); }
+    cg.strokeStyle = 'rgba(141,157,176,.45)'; cg.stroke();
+    const xn = CW * clamp((now - t0) / (t1 - t0));
+    cg.save(); cg.beginPath(); cg.rect(0, 0, xn, CHh); cg.clip();
+    cg.beginPath(); cg.moveTo(0, bot);
+    for (let i = 0; i <= 300; i++) { const t = t0 + (t1 - t0) * i / 300; cg.lineTo(CW * i / 300, bot - utilC(Math.floor(t)) * h); }
+    cg.lineTo(CW, bot); cg.closePath(); cg.fillStyle = 'rgba(56,217,255,.32)'; cg.fill();
+    cg.strokeStyle = '#38d9ff'; cg.stroke(); cg.restore();
+    cg.fillStyle = '#e4ecf3'; cg.fillRect(xn - 1, top, 2, h);
+    cg.fillStyle = '#5b6a7b'; cg.fillText('step 0', 0, bot + 4); cg.textAlign = 'right'; cg.fillText('2,125', CW, bot + 4); cg.textAlign = 'left';
+    cg.fillText('100%', 2, top + 2);
+  }
+}
+
+/* =====================================================================
+   Labels per frame
+   ===================================================================== */
+function updateLabels(T, tau, tauC, tauD, vis) {
+  for (const L of LBL) L.op = 0;
+  const win = (a, b, x, f = 0.6) => sstep(a, a + f, x) * (1 - sstep(b - f, b, x));
+  // 4×4 scene
+  LB.W.p.set(1.0, 0.2, -5.6); LB.W.op = vis * Math.max(win(0.4, 19, T), win(48.6, 58, T));
+  if (T > 40) LB.W.txt.firstChild.textContent = 'W₂, W₃ · next weight tiles'; else LB.W.txt.firstChild.textContent = 'W · weights (RHS)';
+  LB.X.p.set(-8.9, 0.6, -1.85); LB.X.op = vis * Math.max(win(0.4, 19, T), win(48.6, 58, T));
+  LB.X.txt.firstChild.textContent = T > 40 ? 'next blocks of X' : 'X · activations (LHS)';
+  LB.Y.p.set(-2.0, 0.1, 3.3); LB.Y.op = vis * win(0.4, 48.5, T);
+  for (let m = 0; m < 4; m++) {
+    const c = ACH[m * 4];   // block 0, element k = 0 of row m
+    const col = hopA(tau) - (BLOCKS[0].s + m);
+    LB.xrow[m].p.set(c.position.x, 0.7, c.position.z - 0.42);
+    LB.xrow[m].op = vis * win(0.4, 19, T) * (1 - sstep(-1.4, -0.9, col));
+  }
+  const pe = new THREE.Vector3(cx(1), 0, cz(1)), wc = win(20.3, 27.6, T, 0.8);
+  LB.cA.p.set(pe.x - 0.25, 0.62, pe.z - 0.25); LB.cA.op = wc * (tau > 6.02 ? 1 : 0.0);
+  LB.cP.p.set(pe.x + 0.25, 0.62, pe.z + 0.25); LB.cP.op = wc;
+  LB.cW.p.set(pe.x, 0.34, pe.z); LB.cW.op = wc * sstep(6.3, 6.4, tau);
+  LB.cS.p.set(pe.x - 0.25, 0.12, pe.z + 0.25); LB.cS.op = wc;
+  const tc = psChip(0, 1, 2);
+  LB.track.p.copy(tc.position).add(_f.set(0.12, 0.08, -0.1)); LB.track.op = (tc.visible ? 1 : 0) * win(29.4, 40, T);
+  LB.out.p.set(-1.9, 0.05, 3.0); LB.out.op = vis * win(52, 69, T);
+  // 256 × 256
+  const bv = sstep(73, 75, T) * (1 - sstep(104, 106, T));
+  LB.corner.p.set(-2, 0, -2); LB.corner.op = win(72.5, 79.5, T);
+  LB.size.p.set(254, 0, -2); LB.size.op = bv;
+  LB.bW.p.set(40, 0, -8); LB.bW.op = bv * win(75, 92, T);
+  LB.bX.p.set(-8, 0, 30); LB.bX.op = bv * win(78, 96, T);
+  LB.bY.p.set(254, 0, 262); LB.bY.op = bv * win(83, 103, T);
+  const tcI = Math.floor(tauC), dc = tcI - BIG.S1 - 4;
+  if (dc > 0 && dc < 500) { const k = clamp(dc / 2, 0, 255), n = clamp(dc - k, 0, 255); LB.chunk.p.set(cx(n), 0, cz(k)); }
+  LB.chunk.op = win(79.8, 87.5, T) * (dc > 0 && dc < 500 ? 1 : 0);
+  const ds = tcI - BIG.S2;
+  if (ds > 0 && ds < 500) { const k = clamp(ds / 2, 0, 255), n = clamp(ds - k, 0, 255); LB.stream.p.set(cx(n), 0, cz(k)); }
+  LB.stream.op = win(85, 91.5, T) * (ds > 0 && ds < 500 ? 1 : 0);
+  // two MXUs
+  LB.m0.p.set(60, 0, 262); LB.m0.op = win(106, 124.2, T, 1);
+  LB.m1.p.set(356, 0, 262); LB.m1.op = win(106, 124.2, T, 1);
+  LB.bus.p.set(150, 0, -34); LB.bus.op = win(107, 124.2, T, 1);
+  LB.tc0.p.set(-30, 0, -60); LB.tc0.op = win(117, 124.2, T, 1);
+  LB.tc1.p.set(-30, 0, 360); LB.tc1.op = win(117.5, 124.2, T, 1);
+}
+
+/* =====================================================================
+   256×256 per frame
+   ===================================================================== */
+function updateBig(T, tauC, tauD) {
+  const vC = sstep(70.6, 73.4, T);
+  const inD = T >= 104;
+  const set = (A, op, t, sch) => {
+    A.mesh.visible = op > 0.004;
+    if (!A.mesh.visible) return;
+    A.u.uOp.value = op; A.u.uT.value = t; A.frame.material.opacity = 0.6 * op;
+    A.u.uL.value = sch.L; A.u.uS1.value = sch.S1; A.u.uM1.value = sch.M1; A.u.uS2.value = sch.S2; A.u.uM2.value = sch.M2;
+  };
+  const D0 = { L: -3000, S1: 0, M1: 1e7, S2: -1e9, M2: 0 };
+  const D1 = { L: -3000, S1: -420, M1: 1e7, S2: -1e9, M2: 0 };
+  set(MXU0, vC, inD ? tauD : tauC, inD ? D0 : BIG);
+  set(MXU1, inD ? sstep(104.5, 107.5, T) : 0, tauD, D0);
+  set(MXU2, inD ? 0.55 * sstep(115.5, 119, T) : 0, tauD, D1);
+  set(MXU3, inD ? 0.55 * sstep(115.5, 119, T) : 0, tauD, D1);
+  const bo = inD ? sstep(105.5, 108, T) : 0;
+  for (const B of BUSES) { B.m.visible = bo > 0.004; B.u.uOp.value = bo; B.u.uT.value = tauD; }
+}
+
+/* =====================================================================
+   Timeline UI
+   ===================================================================== */
+const track = $('track'), timeEl = $('time'), playBtn = $('play'), hint = $('hint'), fadeEl = $('fade');
+const SEGS = CH.map((C, i) => {
+  const s = document.createElement('div'); s.className = 'seg'; s.style.flex = `${C.t1 - C.t0} 1 0`;
+  s.innerHTML = `<i></i><span>${i + 1}<em> ${C.short}</em></span>`; s.title = `${i + 1}. ${C.title}`;
+  track.appendChild(s); return s;
+});
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function updateBar(T, ci) {
+  SEGS.forEach((s, i) => { const C = CH[i]; s.firstChild.style.width = `${clamp((T - C.t0) / (C.t1 - C.t0)) * 100}%`; });
+  timeEl.textContent = `${mmss(T)} / ${mmss(TOTAL)}`;
+  track.setAttribute('aria-valuenow', T.toFixed(0));
+  track.setAttribute('aria-valuetext', `${mmss(T)}, chapter ${ci + 1}: ${CH[ci].title}`);
+}
+function tFromX(clientX) {
+  const segs = SEGS.map(s => s.getBoundingClientRect());
+  for (let i = 0; i < segs.length; i++) {
+    const r = segs[i], next = segs[i + 1];
+    const right = next ? (r.right + next.left) / 2 : r.right;
+    if (clientX <= right || !next) return CH[i].t0 + clamp((clientX - r.left) / r.width) * (CH[i].t1 - CH[i].t0 - 0.001);
+  }
+  return 0;
+}
+let T = 0, playing = true, scrubbing = false, wasPlaying = true;
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (reduceMotion) playing = false;
+function setPlaying(p) {
+  playing = p;
+  playBtn.setAttribute('aria-label', p ? 'Pause' : 'Play');
+  playBtn.innerHTML = p
+    ? '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1" width="3" height="10" rx=".6"/><rect x="7.5" y="1" width="3" height="10" rx=".6"/></svg>'
+    : '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 1.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L3.4.7a.6.6 0 0 0-.9.5z"/></svg>';
+}
+setPlaying(playing);
+playBtn.addEventListener('click', () => { setPlaying(!playing); dismissHint(); });
+track.addEventListener('pointerdown', e => {
+  scrubbing = true; wasPlaying = playing; setPlaying(false); track.setPointerCapture(e.pointerId);
+  T = tFromX(e.clientX); dismissHint();
+});
+track.addEventListener('pointermove', e => { if (scrubbing) T = tFromX(e.clientX); });
+const endScrub = () => { if (!scrubbing) return; scrubbing = false; setPlaying(wasPlaying); };
+track.addEventListener('pointerup', endScrub); track.addEventListener('pointercancel', endScrub);
+track.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') return;   // handled globally
+  if (e.key === 'Home') { T = 0; e.preventDefault(); }
+  if (e.key === 'End') { T = TOTAL - 0.01; e.preventDefault(); }
+});
+
+// One-step jumps: find the time where the active simulation reaches the next whole step.
+function stepBy(dir) {
+  setPlaying(false);
+  const ci = chapterAt(T), C = CH[ci];
+  const f = C.sim === 'S' ? TAU_S : C.sim === 'C' ? TAU_C : TAU_D;
+  const lo = C.sim === 'S' ? 0 : C.sim === 'C' ? 71 : 104, hi = C.sim === 'S' ? 71 : C.sim === 'C' ? 104 : TOTAL;
+  const cur = f(T), goal = dir > 0 ? Math.floor(cur - 0.9 + 1e-6) + 1.9 : Math.ceil(cur - 0.9 - 1e-6) - 0.1;
+  if ((dir > 0 && f(hi - 1e-3) < goal) || (dir < 0 && f(lo) > goal)) { T = clamp(T + dir * 1.5, 0, TOTAL - 0.01); return; }
+  let a = dir > 0 ? T : lo, b = dir > 0 ? hi : T;
+  for (let i = 0; i < 40; i++) { const mid = (a + b) / 2; if (f(mid) < goal) a = mid; else b = mid; }
+  T = clamp(b, 0, TOTAL - 0.01);
+}
+window.addEventListener('keydown', e => {
+  if (e.target.closest && e.target.closest('button')) { if (e.key === ' ') return; }
+  if (e.key === ' ' || e.key === 'k') { setPlaying(!playing); e.preventDefault(); dismissHint(); }
+  else if (e.key === 'ArrowRight') { stepBy(1); e.preventDefault(); dismissHint(); }
+  else if (e.key === 'ArrowLeft') { stepBy(-1); e.preventDefault(); dismissHint(); }
+});
+
+/* ---------- orbit / zoom / pan on the stage ---------- */
+const ptrs = new Map(); let pinch0 = 0, ld0 = 0;
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey });
+  canvas.classList.add('drag'); user.last = performance.now(); dismissHint();
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); ld0 = user.ld; }
+});
+canvas.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY; user.last = performance.now();
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y); if (pinch0 > 0) user.ld = clamp(ld0 - Math.log(d / pinch0), -2.5, 2.5); return; }
+  if (p.pan) {
+    const d = camState.d * Math.exp(user.ld), s = d * 0.0014, az = (camState.az + user.az) * D2R;
+    user.pan.x += (-dx * Math.cos(az) - dy * Math.sin(az)) * s;
+    user.pan.z += (dx * Math.sin(az) - dy * Math.cos(az)) * s;
+  } else { user.az -= dx * 0.25; user.el = clamp(user.el + dy * 0.18, -60, 40); }
+});
+const pEnd = e => { ptrs.delete(e.pointerId); if (!ptrs.size) canvas.classList.remove('drag'); pinch0 = 0; };
+canvas.addEventListener('pointerup', pEnd); canvas.addEventListener('pointercancel', pEnd);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => { e.preventDefault(); user.ld = clamp(user.ld + e.deltaY * 0.0012, -2.5, 2.5); user.last = performance.now(); dismissHint(); }, { passive: false });
+canvas.addEventListener('dblclick', () => { user.az = user.el = user.ld = 0; user.pan.set(0, 0, 0); });
+let hintGone = false;
+function dismissHint() { if (hintGone) return; hintGone = true; hint.style.opacity = '0'; }
+if (matchMedia('(pointer: coarse)').matches) hint.textContent = 'Drag to orbit · pinch to zoom · tap ▶ to pause';
+
+/* =====================================================================
+   Main loop
+   ===================================================================== */
+let last = performance.now(), frames = 0;
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (playing && !scrubbing) { T += dt; if (T >= TOTAL) T -= TOTAL; }
+  if (!hintGone && T > 22) dismissHint();
+  render(T, dt, now);
+  frames++;
+  if (frames === 3) window.systolicReady = true;
+  requestAnimationFrame(frame);
+}
+function render(T, dt = 0, now = performance.now()) {
+  const ci = chapterAt(T);
+  const tau = TAU_S(T), tauC = TAU_C(T), tauD = TAU_D(T);
+  const vis = 1 - sstep(70.2, 72.4, T);
+  updateSmall(T, tau, vis);
+  updateBig(T, tauC, tauD);
+  updateCamera(T, tau, dt, now);
+  updateLabels(T, tau, tauC, tauD, vis);
+  placeLabels();
+  updateHud(T, tau, tauC, ci);
+  updateBar(T, ci);
+  fadeEl.style.opacity = Math.max(sstep(122.7, 124, T), 1 - sstep(0, 0.5, T)).toFixed(3);
+  composer.render();
+}
+
+// Test and embedding hooks: jump to a time (pauses playback).
+window.systolic = { seek(t) { T = clamp(t, 0, TOTAL - 0.001); setPlaying(false); render(T, 0, performance.now()); }, play() { setPlaying(true); }, get T() { return T; } };
+
+(async () => {
+  try { await Promise.race([Promise.all([document.fonts.load('500 64px "IBM Plex Mono"'), document.fonts.ready]), new Promise(r => setTimeout(r, 2500))]); } catch (e) {}
+  buildSmall();
+  resize();
+  window.addEventListener('resize', resize);
+  requestAnimationFrame(frame);
+})();
+</script>

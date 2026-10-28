@@ -1,0 +1,1230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TPU Deep Zoom</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&family=Saira+Condensed:wght@500;600&display=swap">
+<style>
+/* Layout: one full-bleed WebGL stage. Reading column top-left over a soft scrim, depth gauge on the right edge, scale bar bottom-left. */
+:root{
+  --bg:#04070b;
+  --ink:#e4ecf3;
+  --ink-2:#c3cfda;
+  --muted:#8d9db0;
+  --faint:#5b6a7b;
+  --rule:rgba(141,157,176,.24);
+  --scrim:rgba(4,7,11,.9);
+  --act:#38d9ff;   /* activations, electrical ICI */
+  --wgt:#8f9bff;   /* weights + KV cache streamed from HBM */
+  --res:#ffd166;   /* results, generated tokens */
+  --opt:#ff7a45;   /* optical ICI through OCS */
+  --pci:#6fe3a0;   /* PCIe host I/O */
+  --d2d:#ff5fd2;   /* die-to-die */
+  --req:#eef5ff;   /* requests, control */
+  --cool:#4aa3ff;  /* coolant */
+  --font-display:"Saira Condensed","Arial Narrow","Roboto Condensed",sans-serif;
+  --font-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --gl:max(16px,env(safe-area-inset-left,0px));
+  --gr:max(16px,env(safe-area-inset-right,0px));
+  color-scheme:dark;
+}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);overflow:hidden;overscroll-behavior:none}
+body{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));font-family:var(--font-body);-webkit-font-smoothing:antialiased}
+#stage{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab;outline:none}
+#stage.drag{cursor:grabbing}
+#stage:focus-visible{box-shadow:inset 0 0 0 2px var(--act)}
+.scrim{position:fixed;left:0;top:0;width:min(720px,100%);height:min(720px,86%);pointer-events:none;background:radial-gradient(110% 100% at 0% 0%,var(--scrim) 0%,rgba(4,7,11,.74) 40%,rgba(4,7,11,0) 76%)}
+#hud{position:fixed;top:calc(env(safe-area-inset-top,0px) + 22px);left:var(--gl);width:min(380px,calc(100% - var(--gl) - var(--gr) - 40px));pointer-events:none;transition:opacity .22s ease}
+#hud.swap{opacity:0}
+.eyebrow{font:500 11px/1.2 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:flex;gap:.7em;flex-wrap:wrap}
+.eyebrow b{color:var(--act);font-weight:500}
+.eyebrow span+span::before{content:"·";margin-right:.7em;color:var(--faint)}
+h1{font:600 clamp(30px,4vw,44px)/1 var(--font-display);letter-spacing:.01em;margin:.3em 0 .34em;text-wrap:balance}
+#desc{font:400 14px/1.55 var(--font-body);color:var(--ink-2);margin:0 0 14px;max-width:62ch}
+#stats{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0 0 14px;font-variant-numeric:tabular-nums}
+#stats dt{font:500 10.5px/1.65 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);white-space:nowrap}
+#stats dd{margin:0;font:500 13px/1.45 var(--font-mono);color:var(--ink);min-width:0}
+#legend{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 14px;font:400 11.5px/1.4 var(--font-mono);color:var(--muted)}
+#legend li{display:flex;align-items:center;gap:6px}
+#legend i{width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor;display:inline-block}
+#gauge{position:fixed;right:var(--gr);top:50%;transform:translateY(-50%);pointer-events:none;font:500 10.5px/1 var(--font-mono);letter-spacing:.07em;text-transform:uppercase;padding-right:14px}
+#gauge .row{display:flex;align-items:center;justify-content:flex-end;height:38px;color:var(--faint);transition:color .3s;text-align:right}
+#gauge .row.on{color:var(--ink)}
+#gauge .row small{display:block;margin-top:4px;font-size:9.5px;letter-spacing:.03em;text-transform:none;color:var(--faint)}
+#gauge .rail{position:absolute;right:0;top:19px;bottom:19px;width:1px;background:var(--rule)}
+#gauge .row::after{content:"";position:absolute;right:0;width:6px;height:1px;background:currentColor}
+#gauge .knob{position:absolute;right:-4px;top:19px;width:9px;height:9px;margin-top:-4.5px;border-radius:50%;background:var(--act);box-shadow:0 0 12px var(--act)}
+#scale{position:fixed;left:var(--gl);bottom:calc(env(safe-area-inset-bottom,0px) + 20px);font:500 11px/1 var(--font-mono);color:var(--muted);pointer-events:none;display:flex;flex-direction:column;gap:7px;font-variant-numeric:tabular-nums}
+#scale .bar{height:6px;width:100px;border:1px solid var(--muted);border-top:0}
+#scale.logical .bar{display:none}
+#hint{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);transform:translateX(-50%);font:500 12px/1 var(--font-mono);letter-spacing:.05em;color:var(--ink);background:rgba(4,7,11,.66);padding:10px 15px;border:1px solid var(--rule);border-radius:999px;pointer-events:none;transition:opacity .8s;white-space:nowrap}
+#labels{position:fixed;inset:0;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;left:0;top:0;width:0;height:0;color:var(--act);visibility:hidden;will-change:transform,opacity}
+.lbl .dot{position:absolute;left:-3.5px;top:-3.5px;width:7px;height:7px;border-radius:50%;border:1.5px solid currentColor;box-sizing:border-box}
+.lbl .stem{position:absolute;left:0;top:0;width:20px;height:1px;background:currentColor;opacity:.75;transform-origin:0 0;transform:rotate(-38deg)}
+.lbl .txt{position:absolute;left:16px;bottom:10px;white-space:nowrap;font:500 11px/1.3 var(--font-mono);color:var(--ink);text-shadow:0 1px 2px #000,0 0 10px rgba(0,0,0,.95),0 0 3px #000}
+.lbl .txt span{display:block;font-weight:400;font-size:10.5px;color:var(--ink-2)}
+.lbl.l .stem{transform:rotate(-142deg)}
+.lbl.l .txt{left:auto;right:16px;text-align:right}
+noscript{position:fixed;inset:auto 16px 16px;color:var(--ink)}
+@media (max-width:700px){
+  #hud{width:calc(100% - var(--gl) - var(--gr) - 34px)}
+  h1{font-size:28px}
+  #desc{font-size:12.5px;line-height:1.45;margin-bottom:10px}
+  #stats{gap:3px 10px;margin-bottom:8px}
+  #stats dd{font-size:11.5px}
+  #legend{display:none}
+  #gauge .row{height:26px}
+  #gauge .row span{display:none}
+  #gauge .rail{top:13px;bottom:13px}
+  .scrim{height:85%;width:100%}
+  .lbl .txt{font-size:10px}
+  .lbl .txt span{display:none}
+}
+@media (max-height:560px){#stats,#legend{display:none}}
+@media (prefers-reduced-motion:reduce){#hud,#hint,#gauge .row{transition:none}}
+</style>
+</head>
+<body>
+<canvas id="stage" tabindex="0" aria-label="3D model of a TPU7x superpod. Scroll, pinch or use the arrow keys to zoom; drag to orbit."></canvas>
+<div class="scrim" aria-hidden="true"></div>
+<div id="labels" aria-hidden="true"></div>
+<div id="hud" aria-live="polite">
+  <div class="eyebrow"><b id="lvl">01 / 08</b><span>TPU7x · Ironwood</span><span id="kicker">Facility</span></div>
+  <h1 id="title">Data center</h1>
+  <p id="desc">Loading the superpod…</p>
+  <dl id="stats"></dl>
+  <ul id="legend"></ul>
+</div>
+<div id="gauge" aria-hidden="true"><div class="rail"></div><div class="knob" id="knob"></div></div>
+<div id="scale" aria-hidden="true"><div class="bar" id="bar"></div><span id="scaletext"></span></div>
+<div id="hint">Scroll or pinch to zoom · drag to orbit</div>
+<noscript>This visualization needs JavaScript and WebGL 2.</noscript>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { Pass } from 'three/addons/postprocessing/Pass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ======================================================================
+   Utilities
+   ====================================================================== */
+const V3 = THREE.Vector3;
+const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const lerp = (a, b, t) => a + (b - a) * t;
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mulberry32(91);
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const FOV = 45, SWAP = 0.22;
+
+/* ======================================================================
+   Renderer, post-processing
+   Every zoom level is its own THREE.Scene with its own camera in local
+   units. All cameras describe the same physical viewpoint and use the
+   same physical near/far, so their depth values agree and the scenes
+   can share one depth buffer.
+   ====================================================================== */
+const canvas = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+let PR = Math.min(window.devicePixelRatio || 1, 2);
+let W = innerWidth, H = innerHeight;
+renderer.setPixelRatio(PR);
+renderer.setSize(W, H, false);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+renderer.autoClear = false;
+
+const ENV = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+
+class LevelsPass extends Pass {
+  constructor() { super(); this.needsSwap = false; this.list = []; }
+  render(r, writeBuffer, readBuffer) {
+    r.setRenderTarget(this.renderToScreen ? null : readBuffer);
+    r.setClearColor(0x04070b, 1);
+    r.clear(true, true, true);
+    for (let i = 0; i < this.list.length; i++) {
+      const L = this.list[i]; r.render(L.scene, L.camera);
+      if (i < this.list.length - 1 && L.dim > 0.004) { DIM_MAT.opacity = L.dim; r.render(DIM_SCENE, DIM_CAM); }
+    }
+  }
+}
+const DIM_SCENE = new THREE.Scene(), DIM_CAM = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const DIM_MAT = new THREE.MeshBasicMaterial({ color: 0x04070b, transparent: true, depthTest: false, depthWrite: false });
+DIM_SCENE.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), DIM_MAT));
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(W * PR, H * PR, { type: THREE.HalfFloatType, samples: 4 }));
+composer.setPixelRatio(PR);
+composer.setSize(W, H);
+const levelsPass = new LevelsPass();
+composer.addPass(levelsPass);
+const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.7, 0.5, 1.0);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+/* ======================================================================
+   Geometry / material helpers
+   ====================================================================== */
+const B = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const CYL = new THREE.CylinderGeometry(1, 1, 1, 10, 1);
+function std(color, r = 0.6, m = 0.1, o = {}) {
+  return new THREE.MeshStandardMaterial({ color, roughness: r, metalness: m, map: o.map || null,
+    emissive: o.emissive || 0x000000, emissiveMap: o.emissiveMap || null, emissiveIntensity: o.ei ?? 1,
+    transparent: !!o.t, opacity: o.op ?? 1, depthWrite: o.dw ?? true });
+}
+function basic(color, I = 1, o = {}) {
+  return new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(I), transparent: !!o.t, opacity: o.op ?? 1,
+    depthWrite: o.dw ?? true, blending: o.add ? THREE.AdditiveBlending : THREE.NormalBlending, side: o.side ?? THREE.FrontSide });
+}
+function add(parent, geo, mat, x = 0, y = 0, z = 0) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; }
+function lights(S, hemi = 0.6, dir = 1.5, pos = [3, 6, 2]) {
+  S.environmentIntensity = 0.45;
+  S.add(new THREE.HemisphereLight(0xd6e6ff, 0x101820, hemi));
+  const d = new THREE.DirectionalLight(0xffffff, dir); d.position.set(...pos); S.add(d, d.target);
+  const f = new THREE.DirectionalLight(0x9fc4ff, dir * 0.35); f.position.set(-pos[0], pos[1] * 0.5, -pos[2]); S.add(f, f.target);
+}
+const _m4 = new THREE.Matrix4(), Q0 = new THREE.Quaternion(), S1 = new V3(1, 1, 1), YUP = new V3(0, 1, 0);
+function inst(parent, geo, mat, items) {
+  const im = new THREE.InstancedMesh(geo, mat, items.length);
+  items.forEach((it, i) => { _m4.compose(it.p, it.q || Q0, it.s || S1); im.setMatrixAt(i, _m4); if (it.c) im.setColorAt(i, new THREE.Color(it.c)); });
+  im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
+  im.computeBoundingSphere(); parent.add(im); return im;
+}
+function seg(a, b, r) {
+  const d = b.clone().sub(a), len = d.length();
+  return { p: a.clone().add(b).multiplyScalar(0.5), q: new THREE.Quaternion().setFromUnitVectors(YUP, d.divideScalar(len)), s: new V3(r, len, r) };
+}
+function instHide(im, idx, hide) {
+  if (!im.userData.orig) im.userData.orig = im.instanceMatrix.array.slice();
+  const a = im.instanceMatrix.array, o = im.userData.orig;
+  for (const i of idx) for (let k = 0; k < 16; k++) a[i * 16 + k] = hide ? 0 : o[i * 16 + k];
+  im.instanceMatrix.needsUpdate = true;
+}
+function setOp(m, a) {
+  const u = m.userData;
+  if (u.baseOp === undefined) { u.baseOp = m.opacity; u.alwaysT = m.transparent; }
+  const t = u.alwaysT || a < 0.999;
+  if (m.transparent !== t) { m.transparent = t; m.needsUpdate = true; }
+  m.opacity = u.baseOp * a;
+}
+function mats(obj) { const s = new Set(); obj.traverse(o => { if (o.material && !o.isPoints) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => s.add(m)); }); return [...s]; }
+function fade(group, list, a) { group.visible = a > 0.003; if (group.visible) for (const m of list) setOp(m, a); }
+
+function roundPoly(pts, r, seg = 6) {
+  const out = [], n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    if (i === 0 || i === n - 1) { out.push(p.clone()); continue; }
+    const d1 = p.clone().sub(pts[i - 1]), d2 = pts[i + 1].clone().sub(p);
+    const l1 = d1.length(), l2 = d2.length(); d1.normalize(); d2.normalize();
+    if (d1.dot(d2) > 0.999) { out.push(p.clone()); continue; }
+    const rr = Math.min(r, l1 * 0.5, l2 * 0.5);
+    const s = p.clone().addScaledVector(d1, -rr), e = p.clone().addScaledVector(d2, rr);
+    for (let k = 0; k <= seg; k++) { const t = k / seg; out.push(s.clone().multiplyScalar((1 - t) * (1 - t)).addScaledVector(p, 2 * (1 - t) * t).addScaledVector(e, t * t)); }
+  }
+  return out;
+}
+function mkPath(pts, closed = false) {
+  const p = closed ? [...pts, pts[0]] : pts.slice(); const cum = [0];
+  for (let i = 1; i < p.length; i++) cum.push(cum[i - 1] + p[i].distanceTo(p[i - 1]));
+  return { p, cum, len: cum[cum.length - 1] || 1, closed };
+}
+class Poly extends THREE.Curve {
+  constructor(pts) { super(); this.P = mkPath(pts); }
+  getPoint(t, o = new V3()) {
+    const P = this.P, L = clamp(t, 0, 1) * P.len; let lo = 0, hi = P.cum.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (P.cum[m] <= L) lo = m; else hi = m; }
+    const f = (L - P.cum[lo]) / ((P.cum[hi] - P.cum[lo]) || 1); return o.copy(P.p[lo]).lerp(P.p[hi], f);
+  }
+}
+function tube(parent, pts, r, mat, round = 0, radial = 8) {
+  const q = round > 0 ? roundPoly(pts, round) : pts;
+  const m = new THREE.Mesh(new THREE.TubeGeometry(new Poly(q), Math.max(16, q.length * 4), r, radial, false), mat);
+  parent.add(m); return m;
+}
+const v = (x, y, z) => new V3(x, y, z);
+
+/* ======================================================================
+   Canvas textures (procedural, no external assets)
+   ====================================================================== */
+function ctex(w, h, draw, rep = [1, 1], srgb = true) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep[0], rep[1]); t.anisotropy = 8; return t;
+}
+const TX = {};
+TX.rackFront = ctex(128, 512, (g, w, h) => {
+  g.fillStyle = '#171c23'; g.fillRect(0, 0, w, h); g.fillStyle = '#0c1015'; g.fillRect(6, 6, w - 12, h - 12);
+  const top = 40, slot = (h - 80) / 16;
+  for (let i = 0; i < 16; i++) { const y = top + i * slot; g.fillStyle = '#252d37'; g.fillRect(10, y + 2, w - 20, slot - 4); g.fillStyle = '#10151b'; for (let x = 16; x < w - 34; x += 6) g.fillRect(x, y + 6, 3, slot - 12); }
+  g.fillStyle = '#2d3540'; g.fillRect(10, 10, w - 20, 26); g.fillRect(10, h - 36, w - 20, 26);
+});
+TX.rackFrontE = ctex(128, 512, (g, w, h) => {
+  g.fillStyle = '#000'; g.fillRect(0, 0, w, h); const top = 40, slot = (h - 80) / 16;
+  for (let i = 0; i < 16; i++) { const y = top + i * slot; for (let k = 0; k < 4; k++) { g.fillStyle = rnd() < 0.85 ? '#3dffa0' : '#38d9ff'; g.fillRect(w - 28 + (k % 2) * 8, y + 7 + Math.floor(k / 2) * 9, 4, 3); } }
+  for (let x = 14; x < w - 14; x += 8) { g.fillStyle = rnd() < 0.7 ? '#38d9ff' : '#ffb347'; g.fillRect(x, 20, 3, 3); }
+});
+TX.rackBack = ctex(128, 512, (g, w, h) => {
+  g.fillStyle = '#11151b'; g.fillRect(0, 0, w, h);
+  for (let x = 30; x < w - 30; x += 4) { g.fillStyle = ['#2a3038', '#1d232a', '#c9a227'][Math.floor(rnd() * 3)]; g.fillRect(x, 12, 2, h - 24); }
+  g.fillStyle = '#2f6fd6'; g.fillRect(12, 0, 8, h); g.fillStyle = '#c94545'; g.fillRect(w - 20, 0, 8, h);
+});
+TX.ocsFront = ctex(128, 512, (g, w, h) => { g.fillStyle = '#14181e'; g.fillRect(0, 0, w, h); g.fillStyle = '#1f252e'; for (let y = 36; y < h - 36; y += 60) g.fillRect(8, y, w - 16, 52); });
+TX.ocsFrontE = ctex(128, 512, (g, w, h) => { g.fillStyle = '#000'; g.fillRect(0, 0, w, h); for (let y = 40; y < h - 40; y += 10) for (let x = 14; x < w - 14; x += 7) if (rnd() < 0.8) { g.fillStyle = rnd() < 0.85 ? '#ff8a4a' : '#ffd166'; g.fillRect(x, y, 3, 3); } });
+TX.netFront = ctex(128, 512, (g, w, h) => { g.fillStyle = '#161b22'; g.fillRect(0, 0, w, h); g.fillStyle = '#232a33'; for (let y = 24; y < h - 24; y += 22) g.fillRect(8, y, w - 16, 16); });
+TX.netFrontE = ctex(128, 512, (g, w, h) => { g.fillStyle = '#000'; g.fillRect(0, 0, w, h); for (let y = 28; y < h - 28; y += 22) for (let x = 12; x < w - 12; x += 5) if (rnd() < 0.55) { g.fillStyle = rnd() < 0.8 ? '#3dffa0' : '#38d9ff'; g.fillRect(x, y, 2, 2); } });
+TX.floor = ctex(256, 256, (g, w, h) => {
+  g.fillStyle = '#1b222b'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) if ((i + j) % 3 === 0) { g.fillStyle = '#161c24'; for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) g.fillRect(i * 64 + 8 + a * 9, j * 64 + 8 + b * 9, 4, 4); }
+  g.strokeStyle = '#0d1116'; g.lineWidth = 3; for (let i = 0; i <= 4; i++) { g.beginPath(); g.moveTo(i * 64, 0); g.lineTo(i * 64, h); g.stroke(); g.beginPath(); g.moveTo(0, i * 64); g.lineTo(w, i * 64); g.stroke(); }
+}, [34 / 2.4, 26 / 2.4]);
+TX.pcb = ctex(1024, 1024, (g, w, h) => {
+  g.fillStyle = '#0f2a1d'; g.fillRect(0, 0, w, h); g.lineWidth = 2;
+  for (let i = 0; i < 320; i++) { let x = rnd() * w, y = rnd() * h; g.strokeStyle = `rgba(120,200,140,${0.08 + rnd() * 0.14})`; g.beginPath(); g.moveTo(x, y); for (let k = 0; k < 4; k++) { if (k % 2) x += (rnd() - 0.5) * 320; else y += (rnd() - 0.5) * 320; g.lineTo(x, y); } g.stroke(); }
+  g.fillStyle = 'rgba(210,180,100,.45)'; for (let i = 0; i < 700; i++) g.fillRect(rnd() * w, rnd() * h, 3, 3);
+});
+TX.hostPcb = ctex(512, 256, (g, w, h) => { g.fillStyle = '#10202e'; g.fillRect(0, 0, w, h); g.lineWidth = 1.5; for (let i = 0; i < 120; i++) { let x = rnd() * w, y = rnd() * h; g.strokeStyle = `rgba(120,170,220,${0.08 + rnd() * 0.12})`; g.beginPath(); g.moveTo(x, y); x += (rnd() - 0.5) * 200; g.lineTo(x, y); y += (rnd() - 0.5) * 120; g.lineTo(x, y); g.stroke(); } });
+TX.die = ctex(512, 512, (g, w, h) => { g.fillStyle = '#1a212b'; g.fillRect(0, 0, w, h); for (let i = 0; i < 1600; i++) { const s = 3 + rnd() * 24; g.fillStyle = `rgba(${90 + rnd() * 60 | 0},${110 + rnd() * 60 | 0},${150 + rnd() * 70 | 0},${0.035 + rnd() * 0.07})`; g.fillRect(rnd() * w, rnd() * h, s, s * (0.3 + rnd())); } });
+TX.hbmSide = ctex(64, 128, (g, w, h) => { const n = 9; for (let i = 0; i < n; i++) { const y = i * h / n; g.fillStyle = i === n - 1 ? '#4c525c' : (i % 2 ? '#2c3139' : '#383d47'); g.fillRect(0, y, w, h / n); g.fillStyle = '#9a8656'; g.fillRect(0, y, w, 1.5); } });
+TX.substrate = ctex(512, 512, (g, w, h) => { g.fillStyle = '#2b3428'; g.fillRect(0, 0, w, h); for (let i = 0; i < 2500; i++) { g.fillStyle = `rgba(190,170,110,${0.05 + rnd() * 0.12})`; g.fillRect(rnd() * w, rnd() * h, 2, 2); } });
+TX.sram = ctex(128, 128, (g, w, h) => { g.fillStyle = '#33465d'; g.fillRect(0, 0, w, h); g.fillStyle = '#28384c'; for (let y = 0; y < h; y += 4) g.fillRect(0, y, w, 2); g.fillStyle = '#4b6383'; for (let x = 0; x < w; x += 32) g.fillRect(x, 0, 2, h); });
+TX.peFloor = ctex(256, 256, (g, w, h) => { g.fillStyle = '#18212c'; g.fillRect(0, 0, w, h); g.strokeStyle = 'rgba(120,150,190,.14)'; g.lineWidth = 1; for (let x = 0; x <= w; x += 16) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); } for (let y = 0; y <= h; y += 8) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); } });
+function glyph(ch) { return ctex(128, 128, (g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#fff'; g.font = '500 104px "IBM Plex Mono", monospace'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(ch, w / 2, h / 2 + 4); }); }
+
+/* ======================================================================
+   Data-flow particles: glowing packets moving along polyline paths.
+   Colour encodes what is moving (see the HUD legend).
+   ====================================================================== */
+const PX = { value: 600 };
+const FLOW_VS = `attribute float aSize; attribute vec4 aCol; uniform float uPx; varying vec4 vCol;
+void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); gl_Position = projectionMatrix*mv;
+  float s = aSize*uPx/max(-mv.z,1e-9); vCol = aCol; if(s<2.0){ vCol.a *= s/2.0; s = 2.0; } gl_PointSize = min(s, 90.0); }`;
+const FLOW_FS = `uniform float uOp; varying vec4 vCol;
+void main(){ vec2 p = gl_PointCoord*2.0-1.0; float r2 = dot(p,p); if(r2>1.0) discard;
+  float a = (exp(-r2*4.0)*0.7 + exp(-r2*18.0))*vCol.a*uOp; gl_FragColor = vec4(vCol.rgb*a, 1.0); }`;
+const COL = { req: '#eef5ff', tok: '#ffd166', act: '#38d9ff', wgt: '#8f9bff', res: '#ffd166', opt: '#ff7a45', pci: '#6fe3a0', d2d: '#ff5fd2', cold: '#4aa3ff', hot: '#ff5a50', ctl: '#ffffff' };
+class Flows {
+  constructor(scene, max) {
+    this.max = max; this.count = 0; this.streams = [];
+    this.pos = new Float32Array(max * 3); this.col = new Float32Array(max * 4); this.siz = new Float32Array(max);
+    const g = new THREE.BufferGeometry();
+    this.aPos = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.aCol = new THREE.BufferAttribute(this.col, 4).setUsage(THREE.DynamicDrawUsage);
+    this.aSiz = new THREE.BufferAttribute(this.siz, 1);
+    g.setAttribute('position', this.aPos); g.setAttribute('aCol', this.aCol); g.setAttribute('aSize', this.aSiz);
+    g.setDrawRange(0, 0); this.geo = g;
+    this.mat = new THREE.ShaderMaterial({ uniforms: { uPx: PX, uOp: { value: 1 } }, vertexShader: FLOW_VS, fragmentShader: FLOW_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    this.points = new THREE.Points(g, this.mat); this.points.frustumCulled = false; this.points.renderOrder = 10; scene.add(this.points);
+  }
+  add(pts, o = {}) {
+    const P = pts.len ? pts : mkPath(pts, o.closed);
+    const n = o.n || 6; if (this.count + n > this.max) { console.warn('flow buffer full'); return null; }
+    const s = { P, n, start: this.count, c: new THREE.Color(o.color || COL.act), I: o.I ?? 3, speed: o.speed ?? 1, dir: o.dir ?? 1,
+      phase: o.phase ?? rnd(), jit: Float32Array.from({ length: n }, () => (rnd() - 0.5) * (o.jitter ?? 0.5)), gain: 1, fade: o.fade ?? !P.closed };
+    for (let i = 0; i < n; i++) this.siz[s.start + i] = (o.size ?? 1) * (0.8 + rnd() * 0.4);
+    this.count += n; this.streams.push(s); this.aSiz.needsUpdate = true; this.geo.setDrawRange(0, this.count); return s;
+  }
+  both(pts, a, b) { return [this.add(pts, { ...a, dir: 1 }), this.add(pts, { ...a, ...b, dir: -1 })]; }
+  update(t, op) {
+    this.mat.uniforms.uOp.value = op; this.points.visible = op > 0.004; if (!this.points.visible) return;
+    const pos = this.pos, col = this.col;
+    for (const s of this.streams) {
+      const P = s.P, cum = P.cum, n = s.n, base = s.phase + s.dir * t * s.speed / P.len;
+      for (let i = 0; i < n; i++) {
+        let u = base + (i + s.jit[i]) / n; u -= Math.floor(u);
+        const L = u * P.len; let lo = 0, hi = cum.length - 1;
+        while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cum[m] <= L) lo = m; else hi = m; }
+        const a = P.p[lo], b = P.p[hi], f = (L - cum[lo]) / ((cum[hi] - cum[lo]) || 1), k = s.start + i;
+        pos[k * 3] = a.x + (b.x - a.x) * f; pos[k * 3 + 1] = a.y + (b.y - a.y) * f; pos[k * 3 + 2] = a.z + (b.z - a.z) * f;
+        let al = s.gain; if (s.fade) al *= sstep(0, 0.07, u) * sstep(1, 0.93, u);
+        col[k * 4] = s.c.r * s.I; col[k * 4 + 1] = s.c.g * s.I; col[k * 4 + 2] = s.c.b * s.I; col[k * 4 + 3] = al;
+      }
+    }
+    this.aPos.needsUpdate = true; this.aCol.needsUpdate = true;
+  }
+}
+
+/* ======================================================================
+   Labels: HTML tags anchored to 3D points in a level's local space
+   ====================================================================== */
+const labelsEl = document.getElementById('labels');
+function label(L, pos, title, sub, z0, z1, side = 'r', color) {
+  const el = document.createElement('div'); el.className = 'lbl' + (side === 'l' ? ' l' : '');
+  if (color) el.style.color = color;
+  el.innerHTML = `<i class="dot"></i><i class="stem"></i><div class="txt">${title}${sub ? `<span>${sub}</span>` : ''}</div>`;
+  labelsEl.appendChild(el); L.labels.push({ el, pos, z0, z1, vis: false, side, cur: side });
+}
+const _v = new V3(); let keepOut = [], koFrame = 0;
+const inRect = (x, y, r) => x > r.left - 24 && x < r.right + 24 && y > r.top - 16 && y < r.bottom + 16;
+function updateLabels(z) {
+  if (koFrame-- <= 0) { koFrame = 20; keepOut = [hud.getBoundingClientRect(), gauge.getBoundingClientRect()]; }
+  for (const L of LV) for (const lb of L.labels) {
+    let a = L.active ? sstep(lb.z0 - 0.07, lb.z0 + 0.05, z) * (1 - sstep(lb.z1 - 0.05, lb.z1 + 0.07, z)) : 0;
+    let sx = 0, sy = 0;
+    if (a > 0.01) { _v.copy(lb.pos).project(L.camera); sx = (_v.x * 0.5 + 0.5) * W; sy = (-_v.y * 0.5 + 0.5) * H; if (_v.z > 1 || _v.z < -1 || Math.abs(_v.x) > 1.05 || Math.abs(_v.y) > 1.05 || keepOut.some(r => inRect(sx, sy, r))) a = 0; }
+    if (a <= 0.01) { if (lb.vis) { lb.el.style.visibility = 'hidden'; lb.vis = false; } continue; }
+    if (!lb.vis) { lb.el.style.visibility = 'visible'; lb.vis = true; }
+    const tw = lb.w || (lb.w = lb.el.lastElementChild.offsetWidth); let side = lb.side;
+    if (side === 'r' && sx + 20 + tw > keepOut[1].left - 8) side = 'l'; else if (side === 'l' && sx - 20 - tw < 8) side = 'r';
+    if (side !== lb.cur) { lb.el.classList.toggle('l', side === 'l'); lb.cur = side; }
+    lb.el.style.transform = `translate(${sx.toFixed(1)}px,${sy.toFixed(1)}px)`;
+    lb.el.style.opacity = a.toFixed(3);
+  }
+}
+
+/* ======================================================================
+   Levels and the nested coordinate chain
+   anchor = this level's origin in the parent's units
+   s      = size of one unit of this level in the parent's units
+   keys   = camera keyframes {z, target, distance} in this level's units
+   ====================================================================== */
+const LV = [];
+function level(name, mpu, anchor, s) {
+  const L = { name, mpu, anchor, s, scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(FOV, W / H, 0.1, 100), keys: [], labels: [], update: () => {}, active: false, st: {} };
+  L.scene.environment = ENV; L.scene.environmentIntensity = 0.45; L.idx = LV.length; LV.push(L); return L;
+}
+const DC = level('Data center', 1, v(0, 0, 0), 1);          // metres
+const CUBE = level('Cube', 0.025, v(3.75, 8.25, 3.75), 0.025); // 2.5 cm (logical lattice)
+const TRAY = level('Tray', 0.01, v(10, 14, 10), 0.4);          // cm
+const CHIP = level('Chip', 0.001, v(12.5, 1.3, 12.5), 0.1);    // mm
+const CORE = level('TensorCore', 1e-4, v(11.6, 1.8, 3), 0.1);  // 100 µm
+const MXU = level('MXU', 2e-5, v(34, 1.2, 32), 0.2);           // one PE pitch, 20 µm
+const PE = level('PE', 1e-6, v(52.5, 0, 72.5), 0.05);          // µm
+
+DC.keys = [{ z: -0.4, t: v(0, 0.5, 0), d: 90 }, { z: 0, t: v(0, 0.5, 0), d: 58 }, { z: 0.8, t: v(0.6, 1.3, 1.5), d: 29 }, { z: 1.42, t: v(0.4, 5.8, 0.4), d: 24 }];
+CUBE.keys = [{ z: 2, t: v(0, 0, 0), d: 130 }, { z: 2.45, t: v(3, 4, 3), d: 82 }];
+TRAY.keys = [{ z: 3, t: v(0, 0, 0), d: 115 }, { z: 3.25, t: v(3, 0, 9), d: 100 }];
+CHIP.keys = [{ z: 4, t: v(0, 0, 0), d: 170 }];
+CORE.keys = [{ z: 5, t: v(0, 0, 0), d: 310 }];
+MXU.keys = [{ z: 6, t: v(0, 0, 0), d: 560 }, { z: 6.9, t: v(40, 0, 55), d: 110 }];
+PE.keys = [{ z: 7.6, t: v(0, 0, 0), d: 50 }, { z: 8.3, t: v(0, 0.5, 0), d: 27 }];
+for (let i = 0; i < LV.length - 1; i++) { const c = LV[i + 1]; LV[i].keys.push({ z: c.keys[0].z, t: c.anchor.clone(), d: c.keys[0].d * c.s }); }
+for (const L of LV) { L.zStart = L.keys[0].z; L.zEnd = L.keys[L.keys.length - 1].z; }
+const Z_MIN = -0.4, Z_MAX = 8.3;
+const ctx = (L, z) => 1 - sstep(L.zEnd, L.zEnd + 0.4, z);
+const childOn = (L, z) => L.idx < LV.length - 1 && z >= LV[L.idx + 1].zStart - SWAP;
+
+function camAt(z) {
+  let j = 0; for (let i = 0; i < LV.length; i++) if (z >= LV[i].zStart) j = i;
+  const K = LV[j].keys; let a = K[K.length - 2], b = K[K.length - 1];
+  for (let i = 0; i < K.length - 1; i++) if (z < K[i + 1].z) { a = K[i]; b = K[i + 1]; break; }
+  const u = clamp((z - a.z) / (b.z - a.z), 0, 1), d = a.d * Math.pow(b.d / a.d, u);
+  const w = Math.abs(a.d - b.d) < 1e-9 ? u : (a.d - d) / (a.d - b.d);
+  return { j, t: a.t.clone().lerp(b.t, w), d };
+}
+function convP(p, from, to) {
+  const r = p.clone();
+  if (to > from) for (let i = from + 1; i <= to; i++) r.sub(LV[i].anchor).divideScalar(LV[i].s);
+  else for (let i = from; i > to; i--) r.multiplyScalar(LV[i].s).add(LV[i].anchor);
+  return r;
+}
+function convS(from, to) { let f = 1; if (to > from) for (let i = from + 1; i <= to; i++) f /= LV[i].s; else for (let i = from; i > to; i--) f *= LV[i].s; return f; }
+
+// Guided orbit angles (degrees) along the zoom; user drag adds an offset.
+const ANG = [[-0.4, 26, 40], [0, 30, 35], [0.8, 38, 30], [1.42, 40, 30], [2, 40, 30], [2.5, 34, 33], [3, 30, 46], [3.3, 28, 50], [4, 26, 54], [5, 24, 57], [6, 26, 55], [6.9, 30, 50], [7.6, 34, 45], [8.3, 38, 42]];
+function baseAng(z) {
+  if (z <= ANG[0][0]) return [ANG[0][1], ANG[0][2]];
+  for (let i = 0; i < ANG.length - 1; i++) { const a = ANG[i], b = ANG[i + 1]; if (z <= b[0]) { const t = sstep(a[0], b[0], z); return [lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; } }
+  const l = ANG[ANG.length - 1]; return [l[1], l[2]];
+}
+
+/* ======================================================================
+   Systolic-array timing (shared by the TensorCore, MXU and PE levels)
+   One weight tile every 512 cycles (double-buffered). 12 activation
+   chunks of bf16[8,256] per tile, spaced 24 cycles apart for legibility.
+   A cell (k,n) sees chunk j at cycle 260 + 24j + k + n, for 8 cycles.
+   ====================================================================== */
+const ACT_GLSL = `
+const float TP = 512.0;
+vec2 peAct(float k, float n, float cyc){
+  vec2 a = vec2(0.0);
+  for (int i = 0; i < 3; i++){
+    float tile = floor(cyc/TP) - float(i);
+    float d0 = cyc - tile*TP - 260.0 - (k + n);
+    float j = floor(d0/24.0); float w = d0 - j*24.0;
+    if (j >= 0.0 && j < 12.0){ float b = smoothstep(0.0, 1.2, w)*(1.0 - smoothstep(6.8, 8.0, w)); if (b > a.x) a = vec2(b, b*exp(-w*0.55)); }
+  }
+  return a;
+}
+float peLoad(float k, float cyc){ float c = mod(cyc, TP); return exp(-pow((c - k)/2.5, 2.0))*step(c, 262.0); }`;
+function peActJS(k, n, cyc) {
+  let a = 0;
+  for (let i = 0; i < 3; i++) { const tile = Math.floor(cyc / 512) - i, d0 = cyc - tile * 512 - 260 - (k + n), j = Math.floor(d0 / 24), w = d0 - j * 24; if (j >= 0 && j < 12) a = Math.max(a, sstep(0, 1.2, w) * (1 - sstep(6.8, 8, w))); }
+  return a;
+}
+const U_CYCLE = { value: 0 }, U_TIME = { value: 0 };
+
+/* ======================================================================
+   LEVEL 0-1 · DATA CENTER  →  SUPERPOD 3D TORUS   (units: metres)
+   ====================================================================== */
+const rowZ = r => -8.4 + r * 2.4, colX = c => (c - 8.5) * 0.62;
+const cubeC = (cx, cy, cz) => v((cx - 2.5) * 1.5, 6 + (cy - 1.5) * 1.5, (cz - 2.5) * 1.5);
+const chipG = (gx, gy, gz) => cubeC(gx >> 2, gy >> 2, gz >> 2).add(v(((gx & 3) - 1.5) * 0.25, ((gy & 3) - 1.5) * 0.25, ((gz & 3) - 1.5) * 0.25));
+(function buildDC() {
+  const S = DC.scene, st = DC.st;
+  S.fog = new THREE.Fog(0x04070b, 130, 430);
+  lights(S, 0.5, 1.4, [30, 60, 25]); S.environmentIntensity = 0.3;
+  const infra = new THREE.Group(); S.add(infra);
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(1400, 1400), std('#090e14', 1, 0)); ground.rotation.x = -Math.PI / 2; ground.position.y = -0.36; S.add(ground);
+  const grid = new THREE.GridHelper(1400, 280, 0x1b2834, 0x121b25); grid.position.y = -0.35; S.add(grid);
+  add(S, B(74, 0.3, 60), std('#11171e', 0.95, 0), -3, -0.21, -2);
+  add(S, B(34, 0.3, 26), std('#ffffff', 0.85, 0.05, { map: TX.floor }), 0, -0.15, 0);
+  const wallM = std('#1c242e', 0.9, 0.05);
+  add(infra, B(34.6, 6, 0.3), wallM, 0, 3, -13.15); add(infra, B(0.3, 6, 26.6), wallM, -17.15, 3, 0);
+  add(infra, B(34.6, 0.8, 0.3), wallM, 0, 0.4, 13.15); add(infra, B(0.3, 0.8, 26.6), wallM, 17.15, 0.4, 0);
+
+  // ---- TPU racks (144 = one superpod) ----
+  const rSide = std('#1a2029', 0.55, 0.5), rTop = std('#262e38', 0.6, 0.4);
+  const rFront = std('#ffffff', 0.5, 0.35, { map: TX.rackFront, emissive: '#ffffff', emissiveMap: TX.rackFrontE, ei: 2.2 });
+  const rBack = std('#ffffff', 0.7, 0.2, { map: TX.rackBack });
+  st.rackMats = [rSide, rTop, rFront, rBack];
+  const racksIM = new THREE.InstancedMesh(B(0.6, 2.2, 1.1), [rSide, rSide, rTop, rTop, rFront, rBack], 144); racksIM.frustumCulled = false; S.add(racksIM);
+  const R = [], fx = colX(17), fz = rowZ(7);
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 18; c++) {
+    const idx = r * 3 + c % 3, cx = Math.floor(c / 3), cz = Math.floor(idx / 4), cy = idx % 4;
+    const p = v(colX(c), 1.1, rowZ(r)), dist = Math.hypot(p.x - fx, p.z - fz) / 20;
+    R.push({ p, rot: r % 2 === 0 ? Math.PI : 0, cp: cubeC(cx, cy, cz), focus: r === 7 && c === 17, delay: 0.45 * clamp(0.6 * dist + 0.4 * rnd(), 0, 1) });
+  }
+  st.R = R; st.fi = R.findIndex(x => x.focus);
+
+  // ---- chips inside racks; they become the lattice ----
+  const chipM = std('#ffffff', 0.4, 0.55, { emissive: '#0d4a5e', ei: 1.2 });
+  const chipsIM = new THREE.InstancedMesh(B(0.12, 0.05, 0.12), chipM, 144 * 64); chipsIM.frustumCulled = false; S.add(chipsIM);
+  const cA = new THREE.Color('#58708a'), cF = new THREE.Color('#bfe9ff');
+  for (let i = 0; i < 144; i++) for (let j = 0; j < 64; j++) chipsIM.setColorAt(i * 64 + j, R[i].focus ? cF : cA);
+  chipsIM.instanceColor.needsUpdate = true;
+  st.racksIM = racksIM; st.chipsIM = chipsIM;
+
+  function morph(M) {
+    const ra = racksIM.instanceMatrix.array, ca = chipsIM.instanceMatrix.array;
+    for (let i = 0; i < 144; i++) {
+      const Rk = R[i], m = clamp((M - Rk.delay) / 0.55, 0, 1), e = m * m * (3 - 2 * m);
+      const px = lerp(Rk.p.x, Rk.cp.x, e), py = lerp(Rk.p.y, Rk.cp.y, e) + Math.sin(Math.PI * e) * 2.2, pz = lerp(Rk.p.z, Rk.cp.z, e);
+      const sx = lerp(1, 1 / 0.6, e), sy = lerp(1, 1 / 2.2, e), sz = lerp(1, 1 / 1.1, e), rot = Rk.rot * (1 - e), c = Math.cos(rot), s = Math.sin(rot), o = i * 16;
+      ra[o] = c * sx; ra[o + 1] = 0; ra[o + 2] = -s * sx; ra[o + 3] = 0; ra[o + 4] = 0; ra[o + 5] = sy; ra[o + 6] = 0; ra[o + 7] = 0;
+      ra[o + 8] = s * sz; ra[o + 9] = 0; ra[o + 10] = c * sz; ra[o + 11] = 0; ra[o + 12] = px; ra[o + 13] = py; ra[o + 14] = pz; ra[o + 15] = 1;
+      const shx = lerp(0.6, 1, e), shy = lerp(2.2, 1, e), shz = lerp(1.1, 1, e);
+      const cs = (Rk.focus && st.childOn) ? 0 : sstep(0.3, 0.85, e);
+      for (let j = 0; j < 64; j++) {
+        const a = j & 3, b = (j >> 2) & 3, cc = j >> 4, q = (i * 64 + j) * 16;
+        ca[q] = cs; ca[q + 1] = 0; ca[q + 2] = 0; ca[q + 3] = 0; ca[q + 4] = 0; ca[q + 5] = cs; ca[q + 6] = 0; ca[q + 7] = 0;
+        ca[q + 8] = 0; ca[q + 9] = 0; ca[q + 10] = cs; ca[q + 11] = 0;
+        ca[q + 12] = px + (a - 1.5) * 0.25 * shx; ca[q + 13] = py + (b - 1.5) * 0.25 * shy; ca[q + 14] = pz + (cc - 1.5) * 0.25 * shz; ca[q + 15] = 1;
+      }
+    }
+    racksIM.instanceMatrix.needsUpdate = true; chipsIM.instanceMatrix.needsUpdate = true;
+  }
+  st.morph = morph; st.M = -1; morph(0);
+
+  // ---- support infrastructure ----
+  const cduM = std('#7d8792', 0.5, 0.3);
+  [-7.2, -2.4, 2.4, 7.2].forEach(z => { add(infra, B(0.9, 2.1, 1.3), cduM, 6.75, 1.05, z); add(infra, B(0.92, 0.12, 1.32), std('#2f7be0', 0.4, 0.2, { emissive: '#1d5fd0', ei: 0.6 }), 6.75, 1.7, z); });
+  const coldM = std('#2f6fd6', 0.35, 0.3, { emissive: '#163f8a', ei: 0.5 }), hotM = std('#d64545', 0.35, 0.3, { emissive: '#7a1f1f', ei: 0.5 });
+  const pipeItems = { c: [], h: [] };
+  for (let r = 0; r < 8; r++) { pipeItems.c.push(seg(v(-5.7, 2.42, rowZ(r) - 0.18), v(6.75, 2.42, rowZ(r) - 0.18), 0.055)); pipeItems.h.push(seg(v(-5.7, 2.42, rowZ(r) + 0.18), v(6.75, 2.42, rowZ(r) + 0.18), 0.055)); }
+  inst(infra, CYL, coldM, pipeItems.c); inst(infra, CYL, hotM, pipeItems.h);
+  tube(infra, [v(7.3, 2.0, 7.2), v(7.3, 3.4, 7.2), v(7.3, 3.4, -12.6), v(7.3, 3.4, -18.8), v(7.3, 2.0, -18.8)], 0.12, coldM, 0.6);
+  tube(infra, [v(7.8, 2.0, 7.2), v(7.8, 3.6, 7.2), v(7.8, 3.6, -12.6), v(7.8, 3.6, -19.2), v(7.8, 2.0, -19.2)], 0.12, hotM, 0.6);
+  const trayM = std('#a8872a', 0.65, 0.2), netM = std('#7f8c9a', 0.5, 0.4);
+  for (let r = 0; r < 8; r++) { add(infra, B(13.8, 0.06, 0.32), trayM, 1.2, 2.85, rowZ(r)); add(infra, B(11.6, 0.04, 0.2), netM, 0, 3.05, rowZ(r) - 0.32); add(infra, B(11.2, 0.12, 0.18), std('#59636e', 0.5, 0.5), 0, 2.62, rowZ(r) + 0.4); }
+  add(infra, B(0.32, 0.06, 17.6), trayM, 8.1, 2.85, 0); for (const zz of [-2.6, 0, 2.6]) add(infra, B(1.5, 0.06, 0.32), trayM, 8.85, 2.85, zz);
+  add(infra, B(0.24, 0.04, 17.6), netM, -7.0, 3.05, 0); add(infra, B(2.2, 0.04, 0.24), netM, -8.1, 3.05, 0);
+
+  const ocsIM = new THREE.InstancedMesh(B(0.6, 2.2, 1.1), [rSide, rSide, rTop, rTop, std('#ffffff', 0.5, 0.35, { map: TX.ocsFront, emissive: '#ffffff', emissiveMap: TX.ocsFrontE, ei: 2.2 }), rBack], 12);
+  const netIM = new THREE.InstancedMesh(B(0.6, 2.2, 1.1), [rSide, rSide, rTop, rTop, std('#ffffff', 0.5, 0.35, { map: TX.netFront, emissive: '#ffffff', emissiveMap: TX.netFrontE, ei: 2.2 }), rBack], 8);
+  const qx = new THREE.Quaternion().setFromAxisAngle(YUP, Math.PI / 2);
+  for (let i = 0; i < 12; i++) { _m4.compose(v(9.6, 1.1, (i - 5.5) * 0.62), qx, S1); ocsIM.setMatrixAt(i, _m4); }
+  for (let i = 0; i < 8; i++) { _m4.compose(v(-9.2, 1.1, (i - 3.5) * 0.62), qx, S1); netIM.setMatrixAt(i, _m4); }
+  ocsIM.computeBoundingSphere(); netIM.computeBoundingSphere(); infra.add(ocsIM, netIM);
+
+  const pwrM = std('#2b343f', 0.6, 0.4);
+  [-6, -2, 2, 6].forEach(z => { add(infra, B(2.6, 2.4, 3.2), pwrM, -21.5, 1.2, z); add(infra, B(2.62, 0.1, 0.4), std('#ffd166', 0.5, 0.2, { emissive: '#ffb020', ei: 0.8 }), -21.5, 2.1, z - 1.2); });
+  [-3, 3].forEach(z => add(infra, B(2.2, 2.2, 2.2), std('#3a4450', 0.7, 0.3), -26.5, 1.1, z));
+  add(infra, B(4.4, 0.25, 0.4), std('#59636e', 0.5, 0.5), -19.2, 4.4, 0); add(infra, B(0.3, 0.2, 17.6), std('#59636e', 0.5, 0.5), -6.4, 4.0, 0);
+  st.fans = [];
+  const coolerM = std('#36404b', 0.6, 0.35), fanRing = std('#14191f', 0.5, 0.4), bladeM = std('#7c8794', 0.4, 0.6);
+  for (let i = 0; i < 6; i++) {
+    const x = -13.5 + i * 5.4; add(infra, B(4.4, 1.8, 2.6), coolerM, x, 0.9, -18.8);
+    for (const dx of [-1.1, 1.1]) {
+      add(infra, new THREE.CylinderGeometry(0.95, 0.95, 0.14, 24), fanRing, x + dx, 1.86, -18.8);
+      const bl = new THREE.Group(); bl.position.set(x + dx, 1.95, -18.8);
+      for (let k = 0; k < 3; k++) { const b = add(bl, B(1.6, 0.03, 0.26), bladeM); b.rotation.y = k * Math.PI / 3; }
+      infra.add(bl); st.fans.push(bl);
+    }
+  }
+  add(S, B(62, 0.04, 0.5), std('#3a4a5a', 0.7, 0.2), -48, -0.18, 9.5); // fibre conduit from the campus network
+  st.infra = infra; st.infraMats = mats(infra);
+
+  // ---- logical lattice: cube shells, edges, ICI links ----
+  const lat = new THREE.Group(); S.add(lat); st.lat = lat;
+  const shellM = basic('#5fc8ef', 1, { t: true, op: 0.05, dw: false });
+  st.shellIM = inst(lat, B(1, 1, 1), shellM, R.map(x => ({ p: x.cp })));
+  const eg = new THREE.EdgesGeometry(B(1, 1, 1)).attributes.position.array;
+  const edgesFor = list => { const a = new Float32Array(list.length * eg.length); list.forEach((c, i) => { for (let k = 0; k < eg.length; k += 3) { a[i * eg.length + k] = eg[k] + c.x; a[i * eg.length + k + 1] = eg[k + 1] + c.y; a[i * eg.length + k + 2] = eg[k + 2] + c.z; } }); const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(a, 3)); return g; };
+  lat.add(new THREE.LineSegments(edgesFor(R.filter(x => !x.focus).map(x => x.cp)), new THREE.LineBasicMaterial({ color: 0x3f88a8, transparent: true, opacity: 0.5 })));
+  st.fEdges = new THREE.LineSegments(edgesFor([R[st.fi].cp]), new THREE.LineBasicMaterial({ color: 0x9be7ff, transparent: true, opacity: 0.95 })); lat.add(st.fEdges);
+  const intra = [], fIntra = [], inter = [];
+  const inFocus = (gx, gy, gz) => (gx >> 2) === 5 && (gy >> 2) === 3 && (gz >> 2) === 5;
+  for (let gx = 0; gx < 24; gx++) for (let gy = 0; gy < 16; gy++) for (let gz = 0; gz < 24; gz++) {
+    const p = chipG(gx, gy, gz);
+    for (const [dx, dy, dz, lim, gv] of [[1, 0, 0, 24, gx], [0, 1, 0, 16, gy], [0, 0, 1, 24, gz]]) {
+      if (gv + 1 >= lim) continue;
+      const q = chipG(gx + dx, gy + dy, gz + dz), same = ((gv + 1) >> 2) === (gv >> 2);
+      const arr = !same ? inter : (inFocus(gx, gy, gz) ? fIntra : intra);
+      arr.push(p.x, p.y, p.z, q.x, q.y, q.z);
+    }
+  }
+  const lineGeo = a => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3)); return g; };
+  lat.add(new THREE.LineSegments(lineGeo(intra), new THREE.LineBasicMaterial({ color: 0x2bb3d9, transparent: true, opacity: 0.32 })));
+  st.fLines = new THREE.LineSegments(lineGeo(fIntra), new THREE.LineBasicMaterial({ color: 0x6fe0ff, transparent: true, opacity: 0.7 })); lat.add(st.fLines);
+  lat.add(new THREE.LineSegments(lineGeo(inter), new THREE.LineBasicMaterial({ color: 0xff7a45, transparent: true, opacity: 0.3 })));
+  const gh = []; for (const x of R) { const { x: px, z: pz } = x.p; const c = [[-0.3, -0.55], [0.3, -0.55], [0.3, 0.55], [-0.3, 0.55]]; for (let k = 0; k < 4; k++) { const a = c[k], b = c[(k + 1) % 4]; gh.push(px + a[0], 0.02, pz + a[1], px + b[0], 0.02, pz + b[1]); } }
+  st.ghost = new THREE.LineSegments(lineGeo(gh), new THREE.LineBasicMaterial({ color: 0x4f6274, transparent: true, opacity: 0.45 })); S.add(st.ghost);
+  st.latMats = mats(lat);
+
+  // ---- three torus rings through the chip we will zoom into ----
+  const rings = new THREE.Group(); S.add(rings); st.rings = rings;
+  const ringM = basic('#38d9ff', 1.6, { t: true, op: 0.85 });
+  const top = 9.55;
+  const ax = chipG(0, 15, 23).add(v(-0.4, 0, 0)), bx = chipG(23, 15, 23).add(v(0.4, 0, 0));
+  const xr = roundPoly([ax, bx, v(bx.x + 0.6, bx.y, bx.z), v(bx.x + 0.6, top, bx.z), v(ax.x - 0.6, top, ax.z), v(ax.x - 0.6, ax.y, ax.z), ax], 0.35);
+  const ay = chipG(23, 0, 23).add(v(0, -0.4, 0)), by = chipG(23, 15, 23).add(v(0, 0.4, 0));
+  const yr = roundPoly([ay, by, v(by.x, by.y + 0.6, by.z), v(5.1, by.y + 0.6, by.z), v(5.1, ay.y - 0.6, ay.z), v(ay.x, ay.y - 0.6, ay.z), ay], 0.35);
+  const az = chipG(23, 15, 0).add(v(0, 0, -0.4)), bz = chipG(23, 15, 23).add(v(0, 0, 0.4));
+  const zr = roundPoly([az, bz, v(bz.x, bz.y, bz.z + 0.6), v(bz.x, top + 0.35, bz.z + 0.6), v(az.x, top + 0.35, az.z - 0.6), v(az.x, az.y, az.z - 0.6), az], 0.35);
+  for (const r of [xr, yr, zr]) tube(rings, r, 0.035, ringM, 0, 6);
+  st.ringMats = mats(rings);
+
+  // ---- flows: physical (requests, tokens, optical, coolant) ----
+  const fp = new Flows(S, 900); st.fp = fp;
+  const inet = [v(-80, 0.2, 9.5), v(-17.4, 0.2, 9.5), v(-16.9, 3.05, 9.5), v(-9.2, 3.05, 9.5), v(-9.2, 3.05, 2.2), v(-9.2, 2.25, 2.17)];
+  fp.both(inet, { color: COL.req, n: 16, speed: 9, size: 0.5, I: 3 }, { color: COL.tok, n: 12 });
+  for (let r = 0; r < 8; r++) {
+    const zd = clamp(rowZ(r), -2.2, 2.2), z = rowZ(r);
+    fp.both([v(-9.2, 2.25, zd), v(-9.2, 3.05, zd), v(-7.0, 3.05, zd), v(-7.0, 3.05, z - 0.32), v(5.6, 3.05, z - 0.32)], { color: COL.req, n: 7, speed: 5, size: 0.32, I: 3 }, { color: COL.tok, n: 6 });
+    const zo = (r - 3.5) * 0.85;
+    fp.both([v(-5.6, 2.9, z), v(8.1, 2.9, z), v(8.1, 2.9, zo), v(9.6, 2.3, zo)], { color: COL.opt, n: 7, speed: 6, size: 0.3, I: 3 });
+    fp.add([v(6.75, 2.42, z - 0.18), v(-5.7, 2.42, z - 0.18)], { color: COL.cold, n: 6, speed: 1.5, size: 0.16, I: 1.6 });
+    fp.add([v(-5.7, 2.42, z + 0.18), v(6.75, 2.42, z + 0.18)], { color: COL.hot, n: 6, speed: 1.5, size: 0.16, I: 1.6 });
+  }
+  // ---- flows: lattice (ICI rings + background traffic) ----
+  const fl = new Flows(S, 1400); st.fl = fl;
+  st.ringFlows = []; for (const r of [xr, yr, zr]) st.ringFlows.push(...fl.both(mkPath(r), { color: COL.act, n: 22, speed: 2.6, size: 0.2, I: 4, fade: false }));
+  for (let i = 0; i < 90; i++) {
+    const axis = i % 3; let a, b;
+    if (axis === 0) { const gy = rnd() * 16 | 0, gz = rnd() * 24 | 0; a = chipG(0, gy, gz); b = chipG(23, gy, gz); }
+    else if (axis === 1) { const gx = rnd() * 24 | 0, gz = rnd() * 24 | 0; a = chipG(gx, 0, gz); b = chipG(gx, 15, gz); }
+    else { const gx = rnd() * 24 | 0, gy = rnd() * 16 | 0; a = chipG(gx, gy, 0); b = chipG(gx, gy, 23); }
+    fl.add([a, b], { color: COL.act, n: 5, speed: 1.6 + rnd(), size: 0.13, I: 2.2, dir: rnd() < 0.5 ? 1 : -1 });
+  }
+
+  // ---- labels ----
+  const z0 = -0.6, z1 = 0.8;
+  label(DC, v(0, 3.6, -9.6), 'TPU7x superpod', '144 racks · 9,216 chips', z0, z1);
+  label(DC, v(9.6, 2.5, -3.4), 'Optical circuit switches', 'reconfigurable links between cubes', z0, z1, 'r', COL.opt);
+  label(DC, v(-9.2, 2.4, -2.6), 'DCN', 'data-center network to the hosts', z0, z1, 'l', COL.req);
+  label(DC, v(6.75, 2.2, 7.2), 'Coolant distribution', 'liquid loop to every cold plate', z0, z1, 'r', COL.cold);
+  label(DC, v(2.7, 2.0, -18.8), 'Dry coolers', 'heat rejection', z0, z1);
+  label(DC, v(-21.5, 2.5, 6), 'Power', 'switchgear and UPS', z0, z1, 'l', COL.res);
+  label(DC, v(-30, 0.3, 9.5), 'User requests', 'arrive from the internet', z0, z1, 'l', COL.req);
+  label(DC, chipG(0, 15, 0).add(v(-0.5, 0.5, -0.5)), '3D torus · 24 × 16 × 24', '144 cubes joined by OCS', 1.15, 1.9, 'l');
+  label(DC, v(-1.5, top, ax.z), 'X ring', 'wraparound closes the loop', 1.2, 1.75, 'r', COL.act);
+  label(DC, v(5.1, 5.2, by.z), 'Y ring', 'wraparound', 1.2, 1.75, 'r', COL.act);
+  label(DC, v(bz.x, top + 0.35, 0), 'Z ring', 'wraparound', 1.2, 1.75, 'r', COL.act);
+  label(DC, cubeC(1, 0, 5).add(v(0.5, -0.5, 0.5)), 'Optical links', 'cube to cube, through OCS', 1.2, 1.8, 'r', COL.opt);
+  label(DC, cubeC(5, 3, 5).add(v(0.5, 0.5, -0.5)), 'One cube = one rack', '4 × 4 × 4 chips', 1.5, 1.8);
+
+  DC.update = (z, t, dt) => {
+    const M = sstep(0.82, 1.42, z), co = childOn(DC, z);
+    if (co !== st.childOn) { st.childOn = co; st.fEdges.visible = !co; st.fLines.visible = !co; instHide(st.shellIM, [st.fi], co); st.M = -1; }
+    if (M !== st.M) { st.M = M; morph(M); }
+    const ra = 1 - sstep(0.42, 0.8, M); racksIM.visible = ra > 0.003; for (const m of st.rackMats) setOp(m, ra);
+    fade(infra, st.infraMats, 1 - 0.86 * sstep(0.8, 1.15, z));
+    fade(lat, st.latMats, sstep(0.82, 1.0, M));
+    const rv = sstep(1.15, 1.42, z) * (1 - sstep(1.68, 1.9, z)); fade(rings, st.ringMats, rv); for (const s of st.ringFlows) s.gain = rv;
+    st.ghost.material.opacity = 0.45 * sstep(0.5, 1, M); st.ghost.visible = M > 0.01;
+    for (const f of st.fans) f.rotation.y += dt * 5;
+    fp.update(t, 1 - sstep(0.75, 1.1, z)); fl.update(t, sstep(1.1, 1.42, z) * ctx(DC, z));
+  };
+})();
+
+/* ======================================================================
+   LEVEL 2 · CUBE = ONE RACK (4×4×4)   (units: 2.5 cm, logical layout)
+   ====================================================================== */
+(function buildCube() {
+  const L = CUBE, S = L.scene, st = L.st;
+  lights(S, 0.6, 1.5, [2, 5, 3]);
+  const P = (a, b, c) => v((a - 1.5) * 10, (b - 1.5) * 10, (c - 1.5) * 10);
+  add(S, B(40, 40, 40), basic('#5fc8ef', 1, { t: true, op: 0.035, dw: false }));
+  S.add(new THREE.LineSegments(new THREE.EdgesGeometry(B(40, 40, 40)), new THREE.LineBasicMaterial({ color: 0x9be7ff, transparent: true, opacity: 0.85 })));
+  const chips = []; for (let c = 0; c < 4; c++) for (let b = 0; b < 4; b++) for (let a = 0; a < 4; a++) chips.push({ a, b, c, p: P(a, b, c) });
+  const inTray = ch => ch.b === 3 && ch.a >= 2 && ch.c >= 2;
+  const trayIdx = chips.map((ch, i) => inTray(ch) ? i : -1).filter(i => i >= 0);
+  st.base = inst(S, B(4.8, 0.4, 4.8), std('#272e36', 0.5, 0.6), chips.map(ch => ({ p: ch.p.clone().add(v(0, -0.8, 0)) })));
+  st.plate = inst(S, B(4, 1.2, 4), std('#aeb7c1', 0.55, 0.7), chips.map(ch => ({ p: ch.p.clone().add(v(0, 0.2, 0)) })));
+  st.led = inst(S, B(1.3, 0.06, 1.3), basic('#38d9ff', 1.5), chips.map(ch => ({ p: ch.p.clone().add(v(0, 0.83, 0)) })));
+  const trays = []; for (let b = 0; b < 4; b++) for (let pa = 0; pa < 2; pa++) for (let pc = 0; pc < 2; pc++) trays.push({ p: v(pa ? 10 : -10, (b - 1.5) * 10 - 1.125, pc ? 10 : -10), f: b === 3 && pa === 1 && pc === 1 });
+  st.trays = inst(S, B(18, 0.25, 18), std('#123524', 0.7, 0.1), trays);
+  const fTray = trays.findIndex(t => t.f);
+
+  const extra = new THREE.Group(); S.add(extra);
+  const links = [], fLinks = [], stubs = [], xcv = [], fStubs = [];
+  chips.forEach((ch, i) => {
+    for (const [d, key] of [[v(1, 0, 0), 'a'], [v(0, 1, 0), 'b'], [v(0, 0, 1), 'c']]) {
+      if (ch[key] < 3) { const j = chips.findIndex(o => o.a === ch.a + d.x && o.b === ch.b + d.y && o.c === ch.c + d.z); if (inTray(ch) && inTray(chips[j])) fLinks.push(links.length); links.push(seg(ch.p, chips[j].p, 0.2)); }
+      for (const sgn of [-1, 1]) {
+        if ((sgn > 0 && ch[key] === 3) || (sgn < 0 && ch[key] === 0)) {
+          const e = ch.p.clone().addScaledVector(d, sgn * 6); if (inTray(ch)) fStubs.push(stubs.length);
+          stubs.push(seg(ch.p, e, 0.13)); xcv.push({ p: ch.p.clone().addScaledVector(d, sgn * 6.6) });
+        }
+      }
+    }
+  });
+  st.links = inst(extra, CYL, std('#1b7f9c', 0.4, 0.5, { emissive: '#1aa7d1', ei: 0.6 }), links);
+  st.stubs = inst(extra, CYL, std('#c8642f', 0.5, 0.2, { emissive: '#ff7a45', ei: 0.7 }), stubs);
+  st.xcv = inst(extra, B(1.1, 1.1, 1.1), std('#2a2f36', 0.4, 0.7, { emissive: '#ff7a45', ei: 0.25 }), xcv);
+  const wrapM = basic('#ff7a45', 1.3, { t: true, op: 0.85 });
+  const wx = roundPoly([v(21.6, 15, 15), v(27, 15, 15), v(27, 27, 15), v(-27, 27, 15), v(-27, 15, 15), v(-21.6, 15, 15)], 3);
+  const wy = roundPoly([v(15, 21.6, 15), v(15, 27, 15), v(15, 27, 30), v(15, -27, 30), v(15, -27, 15), v(15, -21.6, 15)], 3);
+  const wz = roundPoly([v(15, 15, 21.6), v(15, 15, 26), v(31, 15, 26), v(31, 15, -26), v(15, 15, -26), v(15, 15, -21.6)], 3);
+  for (const w of [wx, wy, wz]) tube(extra, w, 0.3, wrapM, 0, 6);
+  st.extra = extra; st.extraMats = mats(extra);
+
+  const f = new Flows(S, 1100); st.f = f; st.axisStreams = [[], [], []];
+  for (let ax = 0; ax < 3; ax++) for (let u = 0; u < 4; u++) for (let w = 0; w < 4; w++) {
+    const c1 = (u - 1.5) * 10, c2 = (w - 1.5) * 10;
+    const a = ax === 0 ? v(-21.6, c1, c2) : ax === 1 ? v(c1, -21.6, c2) : v(c1, c2, -21.6);
+    const b = ax === 0 ? v(21.6, c1, c2) : ax === 1 ? v(c1, 21.6, c2) : v(c1, c2, 21.6);
+    st.axisStreams[ax].push(...f.both([a, b], { color: COL.act, n: 6, speed: 15, size: 1.1, I: 3.2 }));
+  }
+  for (const w of [wx, wy, wz]) f.both(mkPath(w), { color: COL.opt, n: 9, speed: 15, size: 1.3, I: 3.4 });
+
+  label(L, v(-20, 20, -20), '64 chips · 4 × 4 × 4', 'one rack, one cube of the torus', 1.85, 2.72, 'l');
+  label(L, v(-10, -15, 15), 'Electrical ICI', 'chip to chip inside the cube', 1.95, 2.7, 'r', COL.act);
+  label(L, v(22.2, -5, 5), 'Optical port', 'fibre to an OCS', 1.95, 2.7, 'r', COL.opt);
+  label(L, v(0, 27, 15), 'Wraparound via OCS', 'turns each ring into a torus', 2.0, 2.75, 'r', COL.opt);
+  label(L, v(-1, 14.2, 19), 'Tray', '4 chips share one CPU host', 2.4, 2.95, 'l');
+
+  L.update = (z, t) => {
+    const co = childOn(L, z);
+    if (co !== st.childOn) { st.childOn = co; for (const im of [st.base, st.plate, st.led]) instHide(im, trayIdx, co); instHide(st.trays, [fTray], co); instHide(st.links, fLinks, co); instHide(st.stubs, fStubs, co); instHide(st.xcv, fStubs, co); }
+    fade(extra, st.extraMats, sstep(L.zStart - SWAP, L.zStart + 0.05, z) * (1 - sstep(2.76, 3.0, z)));
+    for (let ax = 0; ax < 3; ax++) { const g = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 1.2 + ax * 2.1)); for (const s of st.axisStreams[ax]) s.gain = g; }
+    f.update(t, sstep(L.zStart - SWAP, L.zStart + 0.05, z) * (1 - sstep(2.76, 3.0, z)));
+  };
+})();
+
+/* ======================================================================
+   LEVEL 3 · TRAY: 4 chips + CPU host   (units: cm)
+   ====================================================================== */
+(function buildTray() {
+  const L = TRAY, S = L.scene, st = L.st;
+  lights(S, 0.6, 1.5, [3, 6, 2]);
+  const base = new THREE.Group(), extra = new THREE.Group(); S.add(base, extra);
+  add(base, B(45, 0.625, 45), std('#ffffff', 0.6, 0.15, { map: TX.pcb }), 0, -0.3125, 0);
+  const sockM = std('#262b31', 0.5, 0.6), subM = std('#ffffff', 0.65, 0.1, { map: TX.substrate }), interM = std('#323a47', 0.3, 0.5), dieM = std('#ffffff', 0.28, 0.55, { map: TX.die }), hbmM = std('#2b3038', 0.35, 0.6);
+  const CH = [[-12.5, -12.5], [12.5, -12.5], [-12.5, 12.5], [12.5, 12.5]];
+  st.mods = [];
+  CH.forEach(([x, z], i) => {
+    const g = new THREE.Group(); g.position.set(x, 0, z); base.add(g);
+    add(g, B(12, 1, 12), sockM, 0, 0.5, 0);
+    const pkg = new THREE.Group(); g.add(pkg);
+    add(pkg, B(7.5, 0.3, 7.5), subM, 0, 1.15, 0); add(pkg, B(4.8, 0.1, 5.4), interM, 0, 1.35, 0);
+    add(pkg, B(2.2, 0.08, 2.8), dieM, -1.16, 1.44, 0); add(pkg, B(2.2, 0.08, 2.8), dieM, 1.16, 1.44, 0);
+    for (const hx of [-1.735, -0.585, 0.585, 1.735]) for (const hz of [-2.07, 2.07]) add(pkg, B(1.1, 0.085, 1.1), hbmM, hx, 1.4425, hz);
+    const plate = new THREE.Group(); g.add(plate);
+    const pm = std('#aeb7c1', 0.55, 0.7), lm = basic('#38d9ff', 1.5);
+    add(plate, B(10, 3, 10), pm, 0, 3, 0); add(plate, B(3.25, 0.15, 3.25), lm, 0, 4.575, 0);
+    for (const bx of [-2, 2]) add(plate, new THREE.CylinderGeometry(0.45, 0.45, 1.2, 12), std('#c9cfd6', 0.3, 0.9), bx, 5.1, -3);
+    st.mods.push({ g, pkg, plate, plateMats: mats(plate) });
+  });
+  // hoses + manifold
+  const coldM = std('#2f6fd6', 0.4, 0.2, { emissive: '#163f8a', ei: 0.6 }), hotM = std('#d64545', 0.4, 0.2, { emissive: '#7a1f1f', ei: 0.6 });
+  add(extra, new THREE.CylinderGeometry(0.9, 0.9, 50, 16), coldM, 0, 3.4, -25.5).rotation.z = Math.PI / 2;
+  add(extra, new THREE.CylinderGeometry(0.9, 0.9, 50, 16), hotM, 0, 1.6, -24.0).rotation.z = Math.PI / 2;
+  const fHoses = new THREE.Group(); S.add(fHoses);
+  const hosePaths = [];
+  CH.forEach(([x, z], i) => {
+    const grp = i === 3 ? fHoses : extra;
+    const sp = [v(x - 2, 3.4, -25.5), v(x - 2, 7.6, -25.5), v(x - 2, 7.6, z - 3), v(x - 2, 5.6, z - 3)];
+    const rp = [v(x + 2, 5.6, z - 3), v(x + 2, 8.4, z - 3), v(x + 2, 8.4, -24), v(x + 2, 1.6, -24)];
+    tube(grp, sp, 0.45, i === 3 ? coldM.clone() : coldM, 1.2); tube(grp, rp, 0.45, i === 3 ? hotM.clone() : hotM, 1.2);
+    hosePaths.push([roundPoly(sp, 1.2), roundPoly(rp, 1.2), i === 3]);
+  });
+  st.fHoses = fHoses; st.fHoseMats = mats(fHoses);
+  // VRMs, traces, connectors
+  const vrm = []; CH.forEach(([x, z]) => { for (let k = 0; k < 7; k++) for (const sx of [-7.4, 7.4]) vrm.push({ p: v(x + sx, 0.35, z - 4.5 + k * 1.5) }); });
+  inst(extra, B(0.9, 0.7, 0.9), std('#18191c', 0.5, 0.5), vrm);
+  const traceM = std('#0b3a4a', 0.4, 0.3, { emissive: '#1aa7d1', ei: 0.7 });
+  for (const zz of [-12.5, 12.5]) add(extra, B(13, 0.06, 0.6), traceM, 0, 0.03, zz);
+  for (const xx of [-12.5, 12.5]) add(extra, B(0.6, 0.06, 13), traceM, xx, 0.03, 0);
+  const cageM = std('#30363e', 0.4, 0.75), ledA = basic('#38d9ff', 2.5), ledO = basic('#ff7a45', 2.5);
+  const cabCu = std('#3a4048', 0.5, 0.4), cabOpt = std('#ff7a45', 0.5, 0.1, { emissive: '#ff7a45', ei: 0.35 });
+  st.conn = [];
+  for (const off of [-17, -8, 8, 17]) {
+    st.conn.push({ c: v(-21.2, 0.8, off), out: v(-34, 0.8, off * 1.2), opt: false });
+    st.conn.push({ c: v(off, 0.8, -21.2), out: v(off * 1.2, 0.8, -34), opt: false });
+    st.conn.push({ c: v(21.2, 0.8, off), out: v(34, 0.8, off * 1.2), opt: true });
+  }
+  for (const k of st.conn) {
+    const alongX = Math.abs(k.c.x) > 20;
+    add(extra, alongX ? B(3, 1.6, 2.4) : B(2.4, 1.6, 3), cageM, k.c.x, k.c.y, k.c.z);
+    add(extra, B(0.5, 0.2, 0.5), k.opt ? ledO : ledA, k.c.x, 1.7, k.c.z);
+    tube(extra, [k.c.clone(), k.out.clone()], 0.35, k.opt ? cabOpt : cabCu);
+  }
+  // PCIe + host
+  const pcieX = [[-17, -6], [17, 6], [-8, -2], [8, 2]];
+  for (const [xc] of pcieX) add(extra, B(2.4, 1.2, 2), cageM, xc, 0.6, 21.5);
+  const cabM = std('#2b3138', 0.5, 0.4);
+  st.pciePaths = pcieX.map(([xc, xh], i) => { const p = [v(xc, 1.0, 22.5), v(xc, 3.5, 27), v(xh, 3.5, 31), v(xh, 0.8, 34.5)]; tube(extra, p, 0.38, cabM, 1.5); return p; });
+  add(extra, B(38, 0.6, 18), std('#ffffff', 0.6, 0.15, { map: TX.hostPcb }), 0, -0.3, 43);
+  add(extra, B(6, 0.5, 6), sockM, -8, 0.25, 43); add(extra, B(9, 0.6, 9), std('#a8b0b8', 0.35, 0.85), -8, 0.8, 43);
+  for (let i = 0; i < 15; i++) add(extra, B(9, 4.2, 0.16), std('#b8c0c8', 0.35, 0.85), -8, 3.2, 43 - 4.2 + i * 0.6);
+  for (const dx of [-16.6, -15.6, -14.6, -13.6, -2.4, -1.4, -0.4, 0.6]) add(extra, B(0.35, 3.2, 13), std('#1c3d2a', 0.6, 0.2), dx, 1.6, 43);
+  add(extra, B(7, 0.4, 5), std('#1b2430', 0.5, 0.4), 11, 0.2, 47.5); add(extra, B(2.6, 1.4, 2), cageM, 11, 0.9, 50.6);
+  add(extra, B(0.6, 0.2, 0.6), basic('#3dffa0', 2.5), 11, 1.7, 50.6);
+  tube(extra, [v(11, 0.9, 51.6), v(11, 0.9, 60), v(11, 0.9, 95)], 0.3, std('#c9d3dd', 0.4, 0.2));
+  add(extra, B(3, 0.35, 3), std('#1b2430', 0.4, 0.5), 10, 0.2, 39);
+  st.extra = extra; st.extraMats = mats(extra);
+
+  const f = new Flows(S, 1000); st.f = f;
+  f.both([v(11, 0.9, 95), v(11, 0.9, 51.6), v(11, 0.6, 47.5)], { color: COL.req, n: 6, speed: 16, size: 0.9, I: 3 }, { color: COL.tok, n: 6 });
+  f.both([v(11, 0.6, 47.5), v(10, 0.6, 39), v(-8, 1.0, 43)], { color: COL.req, n: 4, speed: 10, size: 0.8, I: 3 }, { color: COL.tok, n: 4 });
+  st.pciePaths.forEach((p, i) => { const [cx, cz] = CH[i]; f.both([v(-8, 1.0, 43), v(10, 0.6, 39), ...roundPoly([...p].reverse(), 1.5), v(p[0].x, 0.08, 21), v(cx, 0.08, cz + 6.5), v(cx, 0.6, cz)], { color: COL.pci, n: 3, speed: 9, size: 0.8, I: 3 }); });
+  for (const zz of [-12.5, 12.5]) f.both([v(-12.5, 0.15, zz), v(12.5, 0.15, zz)], { color: COL.act, n: 4, speed: 12, size: 0.8, I: 3.2 });
+  for (const xx of [-12.5, 12.5]) f.both([v(xx, 0.15, -12.5), v(xx, 0.15, 12.5)], { color: COL.act, n: 4, speed: 12, size: 0.8, I: 3.2 });
+  for (const k of st.conn) {
+    const cx = k.c.x < -20 ? -12.5 : k.c.x > 20 ? 12.5 : (k.c.x < 0 ? -12.5 : 12.5), cz = k.c.z < -20 ? -12.5 : (Math.abs(k.c.x) > 20 ? (k.c.z < 0 ? -12.5 : 12.5) : -12.5);
+    f.both([v(cx, 0.15, cz), v(k.c.x, 0.15, cz === -12.5 && Math.abs(k.c.x) < 20 ? cz : k.c.z), k.c.clone(), k.out.clone()], { color: k.opt ? COL.opt : COL.act, n: 3, speed: 12, size: 0.8, I: 3 });
+  }
+  st.fCool = [];
+  for (const [sp, rp, isF] of hosePaths) { const a = f.add(sp, { color: COL.cold, n: 6, speed: 7, size: 0.55, I: 1.6 }), b = f.add(rp, { color: COL.hot, n: 6, speed: 7, size: 0.55, I: 1.6 }); if (isF) st.fCool.push(a, b); }
+
+  label(L, v(-12.5, 5.2, -12.5), 'TPU7x chip', 'under a liquid cold plate', 2.95, 3.6, 'l');
+  label(L, v(-8, 5.6, 43), 'CPU host', 'feeds inputs, returns tokens', 2.95, 3.6, 'l');
+  label(L, v(-2, 3.6, 29.5), 'PCIe', 'host ↔ HBM, the slow path', 2.95, 3.6, 'r', COL.pci);
+  label(L, v(11, 1.7, 51), 'DCN NIC', '12.5 GB/s per chip', 2.95, 3.6, 'r', COL.req);
+  label(L, v(21.2, 1.7, 8), 'ICI connectors', 'to other trays and the OCS', 2.95, 3.6, 'r', COL.opt);
+  label(L, v(0, 0.2, 12.5), 'On-board ICI', 'chip to chip, never via the host', 2.95, 3.6, 'r', COL.act);
+  label(L, v(-16, 4.4, -25.5), 'Coolant manifold', 'supply and return', 2.95, 3.6, 'l', COL.cold);
+
+  L.update = (z, t) => {
+    const zl = z - L.zStart, co = childOn(L, z), m = st.mods[3];
+    fade(extra, st.extraMats, sstep(-SWAP, 0.06, zl));
+    const e = sstep(0.3, 0.72, zl);
+    m.plate.position.y = 16 * e; fade(m.plate, m.plateMats, 1 - e); fade(fHoses, st.fHoseMats, sstep(-SWAP, 0.06, zl) * (1 - e));
+    for (const s of st.fCool) s.gain = 1 - e;
+    m.pkg.visible = !co;
+    f.update(t, sstep(-SWAP, 0.06, zl) * ctx(L, z));
+  };
+})();
+
+/* ======================================================================
+   LEVEL 4 · TPU7x PACKAGE   (units: mm)
+   Two compute dies (each: 1 TensorCore + 2 SparseCores) on a silicon
+   interposer with 8 HBM3e stacks. Floorplan is stylized.
+   ====================================================================== */
+(function buildChip() {
+  const L = CHIP, S = L.scene, st = L.st;
+  lights(S, 0.6, 1.5, [3, 6, 2]);
+  add(S, B(75, 3, 75), std('#ffffff', 0.62, 0.1, { map: TX.substrate }), 0, -1.5, 0);
+  const stiff = std('#a7b0ba', 0.35, 0.85);
+  for (const s of [-1, 1]) { add(S, B(75, 1.2, 4), stiff, 0, 0.6, s * 35.5); add(S, B(4, 1.2, 67), stiff, s * 35.5, 0.6, 0); }
+  const caps = []; let guard = 0;
+  while (caps.length < 190 && guard++ < 4000) { const x = (rnd() - 0.5) * 64, z = (rnd() - 0.5) * 64; if (Math.abs(x) < 25.5 && Math.abs(z) < 28.5) continue; caps.push({ p: v(x, 0.25, z), q: new THREE.Quaternion().setFromAxisAngle(YUP, rnd() < 0.5 ? 0 : Math.PI / 2) }); }
+  inst(S, B(1.0, 0.5, 0.5), std('#b49360', 0.45, 0.5), caps);
+  add(S, B(48, 1, 54), std('#323a47', 0.3, 0.5), 0, 0.5, 0);
+  const dieM = std('#ffffff', 0.26, 0.55, { map: TX.die });
+  for (const s of [-1, 1]) add(S, B(22, 0.8, 28), dieM, s * 11.6, 1.4, 0);
+  const hbmSide = std('#ffffff', 0.5, 0.3, { map: TX.hbmSide }), hbmTop = std('#56606d', 0.3, 0.55);
+  const hbmMat = [hbmSide, hbmSide, hbmTop, hbmTop, hbmSide, hbmSide];
+  const HBM = []; for (const hx of [-17.35, -5.85, 5.85, 17.35]) for (const hz of [-20.7, 20.7]) { HBM.push(v(hx, 1.425, hz)); add(S, B(11, 0.85, 11), hbmMat, hx, 1.425, hz); }
+
+  const fp = new THREE.Group(); S.add(fp);
+  const blk = (w, d, x, z, col, ei = 0.55) => add(fp, B(w, 0.06, d), std(col, 0.45, 0.2, { emissive: col, ei: ei * 0.45, t: true, op: 0.5 }), x, 1.83, z);
+  for (const s of [-1, 1]) {
+    const xc = s * 11.6;
+    const tc = blk(14, 14, xc, 3, '#1d9fb3', 0.45); if (s > 0) st.tcB = tc;
+    blk(7.5, 6.5, xc - 4.25, -8.75, '#7a5cff', 0.5); blk(7.5, 6.5, xc + 4.25, -8.75, '#7a5cff', 0.5);
+    blk(18, 1.5, xc, -13.25, '#5b7cff'); blk(18, 1.5, xc, 13.25, '#5b7cff');
+    blk(1.6, 26, s * 1.4, 0, '#ff5fd2', 0.6); blk(1.6, 26, s * 21.8, 0, '#38d9ff', 0.6);
+    blk(14, 2, xc, 11.25, '#5a6878', 0.3);
+  }
+  st.fp = fp; st.fpMats = mats(fp);
+
+  const f = new Flows(S, 900); st.f = f;
+  HBM.forEach(h => {
+    const s = Math.sign(h.z), xc = Math.sign(h.x) * 11.6;
+    const p = [v(h.x, 1.95, h.z), v(h.x, 1.95, s * 13.25), v(lerp(h.x, xc, 0.55), 1.95, 3 + s * 5)];
+    f.add(p, { color: COL.wgt, n: 9, speed: 13, size: 0.9, I: 3.4 }); f.add(p, { color: COL.res, n: 2, speed: 13, size: 0.8, I: 3, dir: -1 });
+  });
+  for (const zk of [-9, -4.5, 0, 4.5, 9]) f.both([v(-6.6, 1.95, zk), v(6.6, 1.95, zk)], { color: COL.d2d, n: 3, speed: 10, size: 0.85, I: 3.2 });
+  for (const s of [-1, 1]) for (const zk of [-8, 0, 8]) f.both([v(s * 21.8, 1.95, zk), v(s * 24, 0.08, zk), v(s * 37.5, 0.08, zk * 1.3), v(s * 60, 0.08, zk * 1.6)], { color: COL.act, n: 4, speed: 14, size: 0.9, I: 3.2 });
+  f.both([v(11.6, 1.95, 11.25), v(11.6, 0.08, 28), v(11.6, 0.08, 45)], { color: COL.pci, n: 3, speed: 8, size: 0.8, I: 3 });
+
+  label(L, v(-11.6, 1.9, -6), 'Compute die', '1 TensorCore + 2 SparseCores', 3.9, 4.55, 'l');
+  label(L, v(-17.35, 1.9, 20.7), 'HBM3e stack', '24 GiB · 8 per chip', 3.9, 4.55, 'l', COL.wgt);
+  label(L, v(0, 1.9, 10), 'Die-to-die link', 'joins the two TensorCores', 3.9, 4.6, 'r', COL.d2d);
+  label(L, v(21.8, 1.9, -10), 'ICI SerDes', '6 links to torus neighbours', 3.9, 4.55, 'r', COL.act);
+  label(L, v(-23.5, 1.0, -26), 'Silicon interposer', '', 3.9, 4.4, 'l');
+  label(L, v(-30, 0.1, 31), 'Package substrate', '', 3.9, 4.4, 'l');
+  label(L, v(18.6, 1.9, -4), 'TensorCore', 'zooming in', 4.35, 4.9, 'r', COL.act);
+  label(L, v(15.85, 1.9, -11.5), 'SparseCore', 'embedding lookups', 4.35, 4.85, 'r', '#9a86ff');
+  label(L, v(5, 1.9, -13.25), 'HBM PHY', '', 4.35, 4.85, 'l', COL.wgt);
+
+  L.update = (z, t) => {
+    const zl = z - L.zStart;
+    fade(fp, st.fpMats, sstep(0.08, 0.45, zl) * (1 - 0.75 * sstep(0.85, 1.15, zl)));
+    st.tcB.visible = !childOn(L, z) && zl > 0.08;
+    f.update(t, sstep(-SWAP, 0.1, zl) * ctx(L, z));
+  };
+})();
+
+/* ======================================================================
+   LEVEL 5 · TENSORCORE   (units: 0.1 mm)
+   ====================================================================== */
+const INST_VS = `uniform float uTime; varying vec3 vCol; varying float vSh;
+float h(float x){ return fract(sin(x*12.9898)*43758.5453); }
+void main(){
+  float id = float(gl_InstanceID); float lane = mod(id, 128.0);
+  float tick = floor(uTime*7.0);
+  float wave = 0.5 + 0.5*sin(uTime*3.0 - lane*0.11);
+  float a = step(0.55, h(id*0.37 + tick))*wave;
+  vec4 wp = instanceMatrix*vec4(position, 1.0);
+  vCol = vec3(0.05,0.075,0.10) + vec3(1.0,0.75,0.3)*a*1.25;
+  vSh = 0.45 + 0.55*max(dot(normal, normalize(vec3(0.35,1.0,0.5))), 0.0);
+  gl_Position = projectionMatrix*modelViewMatrix*wp;
+}`;
+const INST_FS = `varying vec3 vCol; varying float vSh; void main(){ gl_FragColor = vec4(vCol*vSh, 1.0); }`;
+const MXU_SURF_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`;
+const MXU_SURF_FS = `uniform float uCycle; varying vec2 vUv;
+${ACT_GLSL}
+void main(){
+  vec2 g = vec2(vUv.x, 1.0 - vUv.y)*256.0; vec2 cell = floor(g);
+  vec2 A = peAct(cell.y, cell.x, uCycle); float ld = peLoad(cell.y, uCycle);
+  vec2 f = fract(g), fw = fwidth(g), dE = min(f, 1.0 - f);
+  float line = 1.0 - min(smoothstep(0.08, 0.08 + fw.x, dE.x), smoothstep(0.08, 0.08 + fw.y, dE.y));
+  line *= 1.0 - smoothstep(0.2, 0.6, max(fw.x, fw.y));
+  vec3 actC = mix(vec3(0.22,0.85,1.0), vec3(1.0,0.78,0.35), cell.y/255.0);
+  vec3 col = vec3(0.045,0.055,0.09)*(1.0 - 0.7*line) + actC*(A.x*0.55 + A.y*1.1) + vec3(0.56,0.6,1.0)*ld*0.8;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+(function buildCore() {
+  const L = CORE, S = L.scene, st = L.st;
+  lights(S, 0.6, 1.5, [3, 6, 2]);
+  add(S, B(140, 0.4, 140), std('#172029', 0.5, 0.4), 0, 0.2, 0);
+  const banks = []; for (let i = 0; i < 16; i++) for (let j = 0; j < 4; j++) banks.push({ p: v(-64 + i * 128 / 15, 1.1, -59 + j * 6.8) });
+  inst(S, B(7.6, 1.4, 6.0), std('#ffffff', 0.45, 0.4, { map: TX.sram }), banks);
+  add(S, B(132, 1.2, 3.5), std('#3c4fb8', 0.45, 0.4, { emissive: '#3346c0', ei: 0.4 }), 0, 1.0, -66.5);
+  const vregs = []; for (let i = 0; i < 32; i++) vregs.push({ p: v(-66 + i * 2.84, 1.3, -28) });
+  inst(S, B(2.3, 1.8, 6.5), std('#1f8fa0', 0.4, 0.45, { emissive: '#0f5260', ei: 0.6 }), vregs);
+  const vpu = []; for (let s = 0; s < 8; s++) for (let n = 0; n < 128; n++) vpu.push({ p: v(-66 + n * 0.69, 0.85, -19.5 + s * 1.85) });
+  inst(S, B(0.55, 0.9, 1.5), new THREE.ShaderMaterial({ uniforms: { uTime: U_TIME }, vertexShader: INST_VS, fragmentShader: INST_FS }), vpu);
+  const ctl = std('#8f9aab', 0.45, 0.5, { emissive: '#3c4452', ei: 0.4 });
+  add(S, B(14, 2, 12), ctl, 40, 1.4, -25); add(S, B(14, 1.6, 12), std('#6e7a8c', 0.4, 0.5), 57, 1.2, -25); add(S, B(31, 1.2, 8), std('#596577', 0.5, 0.4), 48.5, 1.0, -11);
+  st.mxuBlk = []; st.mxuSurf = [];
+  const surfM = new THREE.ShaderMaterial({ uniforms: { uCycle: U_CYCLE }, vertexShader: MXU_SURF_VS, fragmentShader: MXU_SURF_FS });
+  for (const s of [-1, 1]) {
+    st.mxuBlk.push(add(S, B(54, 0.8, 54), std('#141b24', 0.4, 0.5), s * 34, 0.8, 32));
+    const sf = add(S, new THREE.PlaneGeometry(51.2, 51.2), surfM, s * 34, 1.202, 32); sf.rotation.x = -Math.PI / 2; st.mxuSurf.push(sf);
+    add(S, B(51.2, 1.0, 3.5), std('#8a6420', 0.45, 0.4, { emissive: '#ffb020', ei: 0.35 }), s * 34, 0.9, 61.5);
+  }
+
+  const f = new Flows(S, 1200); st.f = f;
+  for (const x of [-55, -33, -11, 11, 33, 55]) {
+    f.add([v(x, 1.8, -170), v(x, 1.8, -68)], { color: COL.wgt, n: 7, speed: 40, size: 2, I: 3.4 });
+    f.add([v(x, 2.2, -66), v(x + 3, 2.2, -50)], { color: COL.wgt, n: 3, speed: 22, size: 1.8, I: 3.2 });
+    f.add([v(x + 5, 1.9, -46), v(x + 5, 1.9, -68), v(x + 5, 1.9, -170)], { color: COL.res, n: 3, speed: 40, size: 1.8, I: 3 });
+  }
+  for (let i = 0; i < 9; i++) { const x = -60 + i * 10; f.add([v(x, 2.6, -38), v(x, 2.6, -29)], { color: i % 2 ? COL.act : COL.wgt, n: 2, speed: 16, size: 1.6, I: 3 }); }
+  for (const s of [-1, 1]) {
+    const xm = s * 34, xv0 = s < 0 ? -58 : -8;
+    for (let k = 0; k < 4; k++) {
+      const xv = xv0 + k * 8, o = -18 + k * 12;
+      f.add(roundPoly([v(xv, 2.6, -25), v(xv, 2.6, -2.5), v(xm + o, 2.6, -2.5), v(xm + o, 2.2, 4), v(xm + o, 1.6, 12)], 2), { color: COL.wgt, n: 4, speed: 30, size: 1.7, I: 3.4 });
+      const zr = 12 + k * 12, xl = xm - 29.5;
+      f.add(roundPoly([v(xv + 3, 2.4, -25), v(xv + 3, 2.4, -1), v(xl, 2.4, -1), v(xl, 2.4, zr), v(xm - 19, 1.6, zr)], 2), { color: COL.act, n: 4, speed: 30, size: 1.7, I: 3.4 });
+      f.add([v(xm + o, 1.7, 52), v(xm + o, 1.8, 61)], { color: COL.res, n: 2, speed: 14, size: 1.6, I: 3.2 });
+    }
+    f.add(roundPoly([v(xm, 2.0, 61.5), v(s * 2.5, 2.0, 61.5), v(s * 2.5, 2.2, -3.5), v(s < 0 ? -30 : 10, 1.8, -12)], 3), { color: COL.res, n: 8, speed: 32, size: 1.7, I: 3.4 });
+  }
+  for (let i = 0; i < 5; i++) { const x = -56 + i * 18; f.add([v(x, 2.4, -14), v(x, 2.6, -28), v(x, 2.4, -40)], { color: COL.res, n: 2, speed: 12, size: 1.5, I: 3 }); }
+  for (const tgt of [v(-20, 2.2, -12), v(-34, 2.2, 5), v(34, 2.2, 5), v(40, 2.2, -66)]) f.add(roundPoly([v(40, 3, -25), v(40, 3, tgt.z > -25 ? -18 : -40), tgt], 3), { color: COL.ctl, n: 2, speed: 28, size: 1.1, I: 2.6 });
+
+  label(L, v(-64, 2.0, -62), 'VMEM', 'on-chip scratchpad · ≈7× HBM bandwidth', 4.9, 5.75, 'l', COL.wgt);
+  label(L, v(64, 1.7, -66.5), 'DMA engines', 'HBM ⇄ VMEM copies', 4.9, 5.7, 'r', COL.wgt);
+  label(L, v(-66, 2.3, -28), 'Vector registers', 'loaded from VMEM', 4.9, 5.7, 'l', COL.act);
+  label(L, v(-66, 1.4, -10), 'VPU · 8 × 128 lanes', 'elementwise math, reductions', 4.9, 5.7, 'l', COL.res);
+  label(L, v(47, 2.5, -25), 'Scalar unit + SMEM', 'control flow, issues instructions', 4.9, 5.7, 'r', COL.ctl);
+  label(L, v(-34, 1.3, 7), 'MXU 0', '', 4.9, 5.7, 'r', COL.act);
+  label(L, v(55, 1.3, 7), 'MXU 1', 'zooming in', 4.9, 5.85, 'r', COL.act);
+  label(L, v(-60, 1.5, 61.5), 'Result buffers', 'f32 outputs back to the VPU', 4.9, 5.7, 'l', COL.res);
+
+  L.update = (z, t) => {
+    const zl = z - L.zStart, co = childOn(L, z);
+    st.mxuBlk[1].visible = !co; st.mxuSurf[1].visible = !co;
+    f.update(t, sstep(-SWAP, 0.1, zl) * ctx(L, z));
+  };
+})();
+
+/* ======================================================================
+   LEVEL 6 · MXU: 256 × 256 systolic array   (units: PE pitch)
+   ====================================================================== */
+const PE_VS = `uniform float uCycle; uniform float uHide; uniform float uGap; varying vec3 vCol; varying float vSh;
+${ACT_GLSL}
+void main(){
+  float id = float(gl_InstanceID); float k = floor(id/256.0); float n = id - k*256.0;
+  vec3 p = position; p.xz *= uGap/0.8; if (abs(id - uHide) < 0.5) p = vec3(0.0);
+  vec3 wp = p + vec3(n - 127.5, -0.15, k - 127.5);
+  vec2 A = peAct(k, n, uCycle); float ld = peLoad(k, uCycle);
+  vec3 actC = mix(vec3(0.22,0.85,1.0), vec3(1.0,0.78,0.35), k/255.0);
+  vCol = vec3(0.04,0.05,0.085) + actC*(A.x*0.5 + A.y*1.0) + vec3(0.56,0.6,1.0)*ld*0.85;
+  vSh = 0.4 + 0.6*max(dot(normal, normalize(vec3(0.35,1.0,0.5))), 0.0);
+  gl_Position = projectionMatrix*modelViewMatrix*vec4(wp, 1.0);
+}`;
+(function buildMXU() {
+  const L = MXU, S = L.scene, st = L.st;
+  lights(S, 0.6, 1.5, [3, 6, 2]);
+  add(S, B(270, 3.7, 270), std('#121a22', 0.5, 0.45), 0, -2.15, 0);
+  add(S, B(5, 0.9, 256), std('#14576a', 0.4, 0.4, { emissive: '#1aa7d1', ei: 0.35 }), -131.5, 0.15, 0);
+  add(S, B(256, 0.9, 5), std('#3a3f86', 0.4, 0.4, { emissive: '#5b6cff', ei: 0.35 }), 0, 0.15, -131.5);
+  add(S, B(256, 0.9, 5), std('#7a5a1e', 0.4, 0.4, { emissive: '#ffb020', ei: 0.35 }), 0, 0.15, 131.5);
+  st.u = { uCycle: U_CYCLE, uHide: { value: -1 }, uGap: { value: 1 } };
+  const pes = new THREE.InstancedMesh(B(0.8, 0.3, 0.8), new THREE.ShaderMaterial({ uniforms: st.u, vertexShader: PE_VS, fragmentShader: INST_FS }), 65536);
+  pes.frustumCulled = false; S.add(pes);
+
+  const f = new Flows(S, 300); st.f = f;
+  for (let i = 0; i < 16; i++) {
+    const r = -120 + i * 16;
+    f.add([v(-175, 0.6, r), v(-128, 0.4, r)], { color: COL.act, n: 3, speed: 40, size: 3, I: 3.2 });
+    f.add([v(r, 0.6, -175), v(r, 0.4, -128)], { color: COL.wgt, n: 3, speed: 40, size: 3, I: 3.2 });
+    f.add([v(r, 0.4, 128), v(r, 0.6, 175)], { color: COL.res, n: 3, speed: 40, size: 3, I: 3.2 });
+  }
+  label(L, v(-40, 0.6, -131.5), 'Weights in', 'bf16[256,256], loaded once, then held', 5.95, 7.0, 'l', COL.wgt);
+  label(L, v(-131.5, 0.6, 30), 'Activations in', 'bf16[8,256], skewed one cycle per row', 5.95, 7.0, 'l', COL.act);
+  label(L, v(110, 0.1, -40), 'Partial sums move down', 'accumulating in fp32', 5.95, 6.9, 'r', COL.res);
+  label(L, v(40, 0.6, 131.5), 'Outputs', 'f32[8,256] to the result buffer', 5.95, 6.9, 'r', COL.res);
+  label(L, v(128, 0, -128), '256 × 256 = 65,536 PEs', 'one multiply-accumulate each per cycle', 5.95, 6.8, 'r');
+  label(L, v(52.5, 0, 72.5), 'One PE', 'row k = 200, column n = 180', 6.9, 7.4, 'r');
+
+  L.update = (z, t) => {
+    const zl = z - L.zStart;
+    st.u.uHide.value = childOn(L, z) ? 200 * 256 + 180 : -1;
+    st.u.uGap.value = lerp(1.0, 0.8, sstep(0.15, 0.55, zl));
+    f.update(t, sstep(-SWAP, 0.1, zl) * (1 - sstep(0.8, 1.0, zl)));
+  };
+})();
+
+/* ======================================================================
+   LEVEL 7 · PROCESSING ELEMENT   (units: µm)
+   ====================================================================== */
+(function buildPE() {
+  const L = PE, S = L.scene, st = L.st;
+  lights(S, 0.6, 1.5, [3, 6, 2]);
+  add(S, B(16, 5, 16), std('#151c25', 0.5, 0.4), 0, -3.5, 0);
+  add(S, B(16, 1, 16), std('#ffffff', 0.45, 0.5, { map: TX.peFloor }), 0, -0.5, 0);
+  const mk = (col, ei) => std(col, 0.35, 0.45, { emissive: col, ei });
+  st.blocks = {
+    act: add(S, B(2.6, 1.4, 2.2), mk('#1aa7d1', 0.3), -5.0, 0.7, -1.5),
+    w: add(S, B(3.0, 1.4, 2.2), mk('#5b6cff', 0.3), -3.5, 0.7, -5.5),
+    mul: add(S, B(3.6, 1.8, 3.6), mk('#2f6f80', 0.15), -0.5, 0.9, 1.5),
+    addr: add(S, B(3.0, 1.8, 3.0), mk('#806020', 0.15), 4.5, 0.9, 3.4),
+    ps: add(S, B(2.6, 1.4, 1.8), mk('#c88a1e', 0.3), 4.5, 0.7, 6.4),
+  };
+  const wire = (pts, col) => { for (let i = 0; i < pts.length - 1; i++) { const a = pts[i], b = pts[i + 1], d = b.clone().sub(a); const len = d.length(), along = Math.abs(d.x) > Math.abs(d.z); add(S, along ? B(len + 0.4, 0.25, 0.4) : B(0.4, 0.25, len + 0.4), std(col, 0.4, 0.3, { emissive: col, ei: 0.35 }), (a.x + b.x) / 2, a.y, (a.z + b.z) / 2); } };
+  const XP = [v(-8, 0.25, -1.5), v(8, 0.25, -1.5)];
+  const AM = [v(-5, 0.35, -1.5), v(-5, 0.35, 1.5), v(-2.3, 0.35, 1.5)];
+  const WM = [v(-3.5, 0.45, -5.5), v(-0.5, 0.45, -5.5), v(-0.5, 0.45, -0.3)];
+  const MA = [v(1.3, 0.35, 1.5), v(4.5, 0.35, 1.5), v(4.5, 0.35, 1.9)];
+  const PS = [v(4.5, 0.55, -8), v(4.5, 0.55, 1.9)];
+  const PO = [v(4.5, 0.35, 4.9), v(4.5, 0.35, 8)];
+  wire(XP, '#1aa7d1'); wire(AM, '#1aa7d1'); wire(WM, '#5b6cff'); wire(MA, '#4fb3c0'); wire(PS, '#c88a1e'); wire(PO, '#c88a1e');
+  const gl = (ch, x, z) => { const m = add(S, new THREE.PlaneGeometry(2.4, 2.4), new THREE.MeshBasicMaterial({ map: glyph(ch), transparent: true, depthWrite: false, color: new THREE.Color(1.6, 1.6, 1.6) }), x, 1.82, z); m.rotation.set(-Math.PI / 2, 0, 40 * Math.PI / 180); return m; };
+  st.g1 = gl('×', -0.5, 1.5); st.g2 = gl('+', 4.5, 3.4);
+  const f = new Flows(S, 120); st.f = f;
+  const lift = (pts, dy) => pts.map(p => p.clone().add(v(0, dy, 0)));
+  st.sx = f.add(lift(XP, 0.6), { color: COL.act, n: 3, speed: 22, size: 0.9, I: 3.6 });
+  st.sa = f.add(lift(AM, 0.6), { color: COL.act, n: 2, speed: 14, size: 0.8, I: 3.6 });
+  st.sw = f.add(lift(WM, 0.6), { color: COL.wgt, n: 2, speed: 14, size: 0.8, I: 3.6 });
+  st.sm = f.add(lift(MA, 0.6), { color: '#bdf3ff', n: 2, speed: 12, size: 0.8, I: 3.2 });
+  st.sp = f.add(lift(PS, 0.6), { color: COL.res, n: 3, speed: 22, size: 0.9, I: 3.6 });
+  st.so = f.add(lift(PO, 0.6), { color: COL.res, n: 2, speed: 14, size: 0.9, I: 3.6 });
+
+  label(L, v(-8, 0.6, -1.5), 'x · bf16', 'activation from the PE on the left', 7.5, 8.4, 'l', COL.act);
+  label(L, v(8, 0.6, -1.5), 'passes right', 'to the next PE, one cycle later', 7.5, 8.4, 'r', COL.act);
+  label(L, v(-3.5, 1.5, -5.5), 'w · bf16', 'stationary weight', 7.5, 8.4, 'l', COL.wgt);
+  label(L, v(-0.5, 1.9, 1.5), 'multiply', 'bf16 × bf16', 7.5, 8.4, 'l');
+  label(L, v(4.5, 1.9, 3.4), 'accumulate', 'fp32 add', 7.5, 8.4, 'r', COL.res);
+  label(L, v(4.5, 0.6, -8), 'partial sum in', 'fp32, from the PE above', 7.5, 8.4, 'r', COL.res);
+  label(L, v(4.5, 0.6, 8), 'partial sum out', 'to the PE below', 7.5, 8.4, 'r', COL.res);
+
+  L.update = (z, t) => {
+    const zl = z - L.zStart, a = peActJS(200, 180, U_CYCLE.value), up = peActJS(199, 180, U_CYCLE.value);
+    const B_ = st.blocks;
+    B_.act.material.emissiveIntensity = 0.3 + a * 2.2; B_.w.material.emissiveIntensity = 0.3 + a * 1.6;
+    B_.mul.material.emissiveIntensity = 0.15 + a * 1.4; B_.addr.material.emissiveIntensity = 0.15 + a * 1.6; B_.ps.material.emissiveIntensity = 0.3 + a * 2.0;
+    st.g1.material.color.setScalar(1 + a * 2.5); st.g2.material.color.setScalar(1 + a * 2.5);
+    st.sx.gain = 0.15 + 0.85 * a; st.sa.gain = 0.1 + 0.9 * a; st.sw.gain = 0.1 + 0.9 * a; st.sm.gain = 0.1 + 0.9 * a; st.sp.gain = 0.15 + 0.85 * up; st.so.gain = 0.15 + 0.85 * a;
+    f.update(t, sstep(-SWAP, 0.1, zl));
+  };
+})();
+
+/* ======================================================================
+   HUD
+   ====================================================================== */
+const STAGES = [
+  { z: -9, name: 'Data center', kicker: 'Facility', scale: '≈ 40 m',
+    desc: "An Ironwood (TPU7x) superpod fills a hall: 144 liquid-cooled racks of 64 chips each. A user's prompt arrives over the data-center network (DCN) and lands on the CPU hosts that drive one slice of chips. Generated tokens travel back the same way.",
+    stats: [['Chips', '9,216'], ['Peak bf16', '≈ 21 exaFLOP/s'], ['DCN egress', '12.5 GB/s per chip']], legend: ['req', 'tok', 'opt', 'cool'] },
+  { z: 0.95, name: 'Superpod · 3D torus', kicker: 'Logical topology', scale: '9,216 chips',
+    desc: 'As a network, each rack is a 4×4×4 cube, and optical circuit switches join the 144 cubes into one 3D torus. Every chip links directly to six neighbours, and wraparound links cut the worst-case distance from N hops to N/2. The model is sharded across chips, so each layer ends with activations moving around these rings.',
+    stats: [['ICI per chip', '1.2 TB/s bidirectional'], ['Per axis', '400 GB/s'], ['Neighbours', '6 (±x ±y ±z)'], ['Shape shown', '24 × 16 × 24']], legend: ['act', 'opt'] },
+  { z: 2, name: 'Cube · one rack', kicker: '4 × 4 × 4 chips', scale: '64 chips',
+    desc: 'Inside a cube the ICI links are electrical. Every face link leaves through an optical transceiver to an OCS, which routes it to a neighbouring cube or loops it back to the opposite face. Only full cubes get those wraparounds. A 2×2×2 slice has none, which roughly doubles the time of most collectives.',
+    stats: [['Chips', '64 = 16 trays × 4'], ['Face links to OCS', '96'], ['Wraparounds', 'full cubes only']], legend: ['act', 'opt'] },
+  { z: 3, name: 'Tray · 4 chips + host', kicker: 'Board', scale: '≈ 45 cm',
+    desc: 'Four chips share a tray and a CPU host. The host feeds inputs to the chips over PCIe and sends generated tokens back out over DCN. Chips reach each other directly over ICI, through board traces and edge connectors, never through the host.',
+    stats: [['PCIe (TPU v4)', '16 GB/s each way'], ['vs HBM', '≈ 100× slower'], ['Cooling', 'liquid cold plates']], legend: ['req', 'tok', 'pci', 'act', 'cool'] },
+  { z: 4, name: 'TPU7x chip', kicker: 'Package', scale: '≈ 75 mm',
+    desc: 'Two compute dies sit on a silicon interposer, each with one TensorCore and four HBM3e stacks. There is no megacore: a die-to-die link joins the two TensorCores. Every generated token streams the weights and KV cache out of HBM, so small-batch decoding is usually limited by HBM bandwidth rather than FLOPs.',
+    stats: [['bf16', '2.3 PFLOP/s'], ['fp8', '4.6 PFLOP/s'], ['HBM3e', '192 GiB · 7.4 TB/s'], ['Compute-bound above', '≈ 310 FLOPs per byte']], legend: ['wgt', 'res', 'd2d', 'act', 'pci'] },
+  { z: 5, name: 'TensorCore', kicker: 'Core', scale: '≈ 14 mm',
+    desc: 'Everything is pipelined. DMA engines copy tiles from HBM into VMEM, loads move them into vector registers, the MXUs multiply, and the VPU applies activations and reductions. Results return to VMEM and HBM. Copies overlap with math, so the MXUs stay busy as long as each byte brings enough FLOPs.',
+    stats: [['MXUs', '2 per core'], ['bf16 per core', '1.15 PFLOP/s'], ['VMEM', '128 MiB per chip'], ['VMEM vs HBM bandwidth', '≈ 7×']], legend: ['wgt', 'act', 'res', 'ctl'] },
+  { z: 6, name: 'MXU · systolic array', kicker: 'Matrix unit', scale: '≈ 5 mm',
+    desc: 'A 256×256 grid of multiply-accumulate cells. Weights load once and stay put. Activation vectors enter from the left, skewed by one cycle per row. Partial sums move down one row per cycle and leave the bottom as finished outputs: one bf16[8,256] @ bf16[256,256] → f32[8,256] every 4 cycles.',
+    stats: [['Array', '256 × 256'], ['Clock', '2.2 GHz'], ['Per MXU', '≈ 5.8 × 10¹⁴ FLOP/s'], ['Playback', '{slow}']], legend: ['wgt', 'act', 'res'] },
+  { z: 7.6, name: 'Processing element', kicker: 'One MAC cell', scale: '≈ 20 µm',
+    desc: 'Each cycle this cell multiplies the bf16 activation arriving from the left by its stationary bf16 weight and adds the product to the fp32 partial sum arriving from above. It passes the activation right and the sum down. One MXU holds 65,536 of these and does about 290 trillion multiply-adds per second.',
+    stats: [['Multiply', 'bf16 × bf16'], ['Accumulate', 'fp32'], ['PEs per chip', '262,144'], ['Playback', '{slow}']], legend: ['act', 'wgt', 'res'] },
+];
+const GZ = [Z_MIN, 0.95, 2, 3, 4, 5, 6, 7.6, Z_MAX];
+const LEG = { req: ['var(--req)', 'requests'], tok: ['var(--res)', 'generated tokens'], opt: ['var(--opt)', 'optical ICI via OCS'], cool: ['var(--cool)', 'coolant'],
+  act: ['var(--act)', 'activations · ICI'], pci: ['var(--pci)', 'PCIe host I/O'], wgt: ['var(--wgt)', 'weights + KV from HBM'], res: ['var(--res)', 'results'], d2d: ['var(--d2d)', 'die-to-die'], ctl: ['var(--req)', 'control'] };
+const $ = id => document.getElementById(id);
+const hud = $('hud'), gauge = $('gauge'), knob = $('knob'), bar = $('bar'), scaleText = $('scaletext'), scaleBox = $('scale'), hint = $('hint');
+const rows = STAGES.map((s, i) => { const d = document.createElement('div'); d.className = 'row'; d.innerHTML = `<span>${s.name.split(' · ')[0]}<small>${s.scale}</small></span>`; gauge.appendChild(d); return d; });
+let stageIdx = -1, swapTimer = 0, slowText = '';
+const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+function fillStage(i) {
+  const s = STAGES[i];
+  $('lvl').textContent = `${String(i + 1).padStart(2, '0')} / ${String(STAGES.length).padStart(2, '0')}`;
+  $('kicker').textContent = s.kicker; $('title').textContent = s.name; $('desc').textContent = s.desc;
+  $('stats').innerHTML = s.stats.map(([k, val]) => `<dt>${k}</dt><dd${val === '{slow}' ? ' class="slow"' : ''}>${val === '{slow}' ? slowText : val}</dd>`).join('');
+  $('legend').innerHTML = s.legend.map(k => `<li><i style="color:${LEG[k][0]}"></i>${LEG[k][1]}</li>`).join('');
+  rows.forEach((r, k) => r.classList.toggle('on', k === i));
+}
+function updateHUD(z, cam, rate) {
+  let i = 0; for (let k = 0; k < STAGES.length; k++) if (z >= STAGES[k].z) i = k;
+  if (i !== stageIdx) { const first = stageIdx < 0; stageIdx = i; clearTimeout(swapTimer); if (first || REDUCED) fillStage(i); else { hud.classList.add('swap'); swapTimer = setTimeout(() => { fillStage(stageIdx); hud.classList.remove('swap'); }, 200); } }
+  const slow = 2.2e9 / rate, e = Math.floor(Math.log10(slow)), m = Math.round(slow / 10 ** e);
+  const txt = `slowed ≈ ${m} × 10${String(e).split('').map(c => SUP[c]).join('')}×`;
+  if (txt !== slowText) { slowText = txt; document.querySelectorAll('#stats .slow').forEach(d => d.textContent = txt); }
+  let g = 0; for (let k = 0; k < GZ.length - 1; k++) if (z >= GZ[k]) g = k + clamp((z - GZ[k]) / (GZ[k + 1] - GZ[k]), 0, 1);
+  const rowH = rows[0].offsetHeight || 38; knob.style.transform = `translateY(${(Math.min(g, STAGES.length - 1) * rowH).toFixed(1)}px)`;
+  if (z > 0.95 && z < 2.95) { scaleBox.classList.add('logical'); scaleText.textContent = 'logical topology · not to scale'; }
+  else {
+    scaleBox.classList.remove('logical');
+    const L = LV[cam.j], mpp = 2 * cam.d * Math.tan(FOV * Math.PI / 360) * L.mpu / H, target = 110 * mpp;
+    const ex = Math.floor(Math.log10(target)), bs = target / 10 ** ex, nice = (bs >= 5 ? 5 : bs >= 2 ? 2 : 1) * 10 ** ex;
+    bar.style.width = (nice / mpp).toFixed(1) + 'px';
+    const fmt = x => x >= 1 ? `${+x.toPrecision(3)} m` : x >= 0.01 ? `${+(x * 100).toPrecision(3)} cm` : x >= 0.001 ? `${+(x * 1000).toPrecision(3)} mm` : `${+(x * 1e6).toPrecision(3)} µm`;
+    scaleText.textContent = `${fmt(nice)} · approx.`;
+  }
+}
+
+/* ======================================================================
+   Input: wheel / pinch zoom, drag orbit, keyboard
+   ====================================================================== */
+let zT = REDUCED ? 0 : Z_MIN, zC = zT, azU = 0, elU = 0, azT = 0, elT = 0, lastInput = performance.now(), touched = false;
+const deg = Math.PI / 180;
+function nudge(dz) { zT = clamp(zT + dz, Z_MIN, Z_MAX); lastInput = performance.now(); if (zT > 0.12) touched = true; }
+canvas.addEventListener('wheel', e => {
+  e.preventDefault(); let d = e.deltaY; if (e.deltaMode === 1) d *= 33; else if (e.deltaMode === 2) d *= 400;
+  nudge(-d * (e.ctrlKey ? 0.0075 : 0.0016));
+}, { passive: false });
+const ptrs = new Map(); let pinch0 = 0;
+canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); canvas.classList.add('drag'); if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); } });
+canvas.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  if (ptrs.size === 1) { azT -= (e.clientX - p.x) * 0.0055; elT = clamp(elT + (e.clientY - p.y) * 0.0045, -1.3, 1.3); lastInput = performance.now(); touched = true; }
+  p.x = e.clientX; p.y = e.clientY;
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y); if (pinch0 > 0) nudge(Math.log(d / pinch0) * 1.6); pinch0 = d; }
+});
+const up = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch0 = 0; if (!ptrs.size) canvas.classList.remove('drag'); };
+canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+addEventListener('keydown', e => {
+  const k = e.key;
+  if (k === 'ArrowUp' || k === '+' || k === '=' || k === 'w') { nudge(0.2); e.preventDefault(); }
+  else if (k === 'ArrowDown' || k === '-' || k === '_' || k === 's') { nudge(-0.2); e.preventDefault(); }
+  else if (k === 'ArrowLeft' || k === 'a') { azT += 0.12; lastInput = performance.now(); }
+  else if (k === 'ArrowRight' || k === 'd') { azT -= 0.12; lastInput = performance.now(); }
+});
+function resize() {
+  W = innerWidth; H = innerHeight;
+  renderer.setPixelRatio(PR); renderer.setSize(W, H, false);
+  composer.setPixelRatio(PR); composer.setSize(W, H);
+  for (const L of LV) { L.camera.aspect = W / H; L.camera.updateProjectionMatrix(); }
+  PX.value = H * PR / (2 * Math.tan(FOV * Math.PI / 360));
+}
+addEventListener('resize', resize); resize();
+setTimeout(() => { if (zT < 0) zT = 0; }, 350);
+
+/* ======================================================================
+   Frame loop
+   ====================================================================== */
+const dir = new V3();
+let prev = performance.now(), time = 0, cycle = 300, ft = 0, fn = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - prev) / 1000); prev = now;
+  time += dt * (REDUCED ? 0.4 : 1);
+  zC += (zT - zC) * (1 - Math.exp(-dt * 5)); if (Math.abs(zT - zC) < 1e-4) zC = zT;
+  const idle = now - lastInput;
+  if (!REDUCED && idle > 9000) azT += dt * 0.015 * sstep(9000, 13000, idle);
+  azU += (azT - azU) * (1 - Math.exp(-dt * 8)); elU += (elT - elU) * (1 - Math.exp(-dt * 8));
+  const rate = lerp(110, 22, sstep(6.9, 7.6, zC)) * (REDUCED ? 0.4 : 1);
+  cycle += dt * rate; U_CYCLE.value = cycle; U_TIME.value = time;
+
+  const cam = camAt(zC), [a0, e0] = baseAng(zC);
+  cam.d *= Math.pow(clamp(1.3 / (W / H), 1, 1.9), 0.8); // portrait screens: step back so the subject fits the width
+  const az = a0 * deg + azU, el = clamp(e0 * deg + elU, 4 * deg, 86 * deg);
+  dir.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
+  const pos = cam.t.clone().addScaledVector(dir, cam.d);
+  const list = [];
+  for (const L of LV) {
+    L.active = zC >= L.zStart - SWAP && zC <= L.zEnd + 1.0;
+    if (!L.active) continue;
+    const c = L.camera, k = convS(cam.j, L.idx), dk = cam.d * k;
+    c.position.copy(convP(pos, cam.j, L.idx)); c.lookAt(convP(cam.t, cam.j, L.idx));
+    c.near = dk * 0.015; c.far = dk * 3000; c.updateProjectionMatrix(); c.updateMatrixWorld();
+    L.dim = 0.66 * sstep(L.zEnd - 0.12, L.zEnd + 0.22, zC);
+    L.update(zC, time, dt); list.push(L);
+  }
+  levelsPass.list = list;
+  composer.render(dt);
+  updateLabels(zC); updateHUD(zC, cam, rate);
+  hint.style.opacity = touched ? 0 : 1;
+
+  ft += dt; fn++;
+  if (fn === 90) { if (ft / fn > 0.03 && PR > 1) { PR = Math.max(1, PR - 0.25); resize(); } ft = 0; fn = 0; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Small hook for automated checks: tpu.go(z) jumps to a zoom depth.
+window.tpu = { go(z) { zT = zC = clamp(z, Z_MIN, Z_MAX); touched = true; lastInput = performance.now(); }, get z() { return zC; }, orbit(a, e) { azT = azU = a; elT = elU = e; } };
+</script>
+</body>
+</html>

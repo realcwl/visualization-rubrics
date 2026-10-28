@@ -1,0 +1,5 @@
+# Deploy only the page and its textures; renders and render scripts stay local.
+*.mp4
+video/
+index-v1.html
+.DS_Store
